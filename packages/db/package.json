@@ -1,0 +1,28 @@
+{
+  "name": "@oshxona/db",
+  "version": "1.0.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rimraf dist",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "ts-node prisma/seed.ts",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.4.1",
+    "@oshxona/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "bcrypt": "^5.1.1",
+    "@types/bcrypt": "^5.0.2",
+    "@types/node": "^22.13.5",
+    "prisma": "^6.4.1",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}

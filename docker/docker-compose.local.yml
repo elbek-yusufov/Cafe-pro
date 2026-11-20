@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL Mahalliy Ma'lumotlar Bazasi (Ixtiyoriy, agar SQLite o'rniga Postgres ishlatilsa)
+  postgres:
+    image: postgres:16-alpine
+    container_name: oshxona_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: oshxona_user
+      POSTGRES_PASSWORD: oshxona_secure_password
+      POSTGRES_DB: oshxona_pos
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oshxona_user -d oshxona_pos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Local Server (NestJS Kassa & Oshxona API)
+  local-server:
+    build:
+      context: ..
+      dockerfile: apps/local-server/Dockerfile
+    container_name: oshxona_local_server
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: "file:./data/oshxona.db"
+      JWT_SECRET: "oshxona-pos-offline-super-secret-key-2026"
+      JWT_EXPIRES_IN: "7d"
+      CLOUD_SYNC_URL: "http://cloud-api:4000/sync"
+      BRANCH_ID: "branch-tashkent-main"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+    volumes:
+      - local_server_data:/app/apps/local-server/data
+      - local_server_backups:/app/apps/local-server/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 3. Admin Web & KDS Ekran (Next.js 15)
+  admin-web:
+    build:
+      context: ..
+      dockerfile: apps/admin-web/Dockerfile
+    container_name: oshxona_admin_web
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: "http://localhost:3000"
+    depends_on:
+      - local-server
+
+volumes:
+  postgres_data:
+  local_server_data:
+  local_server_backups:

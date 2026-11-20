@@ -1,0 +1,31 @@
+{
+  "name": "oshxona-pos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Oshxona va restoranlar uchun zamonaviy POS va boshqaruv tizimi (Online + Offline)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "clean": "turbo run clean",
+    "db:generate": "pnpm --filter @oshxona/db db:generate",
+    "db:migrate": "pnpm --filter @oshxona/db db:migrate",
+    "db:push": "pnpm --filter @oshxona/db db:push",
+    "db:seed": "pnpm --filter @oshxona/db db:seed",
+    "db:studio": "pnpm --filter @oshxona/db db:studio",
+    "dev:local-server": "pnpm --filter @oshxona/local-server start:dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.4",
+    "typescript": "^5.7.3"
+  },
+  "packageManager": "pnpm@10.5.2",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

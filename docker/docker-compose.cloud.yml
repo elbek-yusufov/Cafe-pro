@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Bulut PostgreSQL
+  cloud-postgres:
+    image: postgres:16-alpine
+    container_name: oshxona_cloud_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: cloud_pos_admin
+      POSTGRES_PASSWORD: cloud_pos_secure_pass_2026
+      POSTGRES_DB: oshxona_pos_cloud
+    ports:
+      - "5433:5432"
+    volumes:
+      - cloud_pg_data:/var/lib/postgresql/data
+
+  # Cloud API Server (Markaziy Bulut Tizimi)
+  cloud-api:
+    build:
+      context: ..
+      dockerfile: apps/cloud-api/Dockerfile
+    container_name: oshxona_cloud_api
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      DATABASE_URL: "postgresql://cloud_pos_admin:cloud_pos_secure_pass_2026@cloud-postgres:5432/oshxona_pos_cloud?schema=public"
+      JWT_SECRET: "cloud-super-secret-sync-master-key"
+    depends_on:
+      - cloud-postgres
+
+volumes:
+  cloud_pg_data:
