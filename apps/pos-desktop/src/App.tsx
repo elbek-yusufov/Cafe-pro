@@ -13,8 +13,6 @@ import {
   ActiveTab,
 } from './types/pos';
 import {
-  initialCategories,
-  initialDishes,
   initialTables,
   initialOrders,
   initialInventory,
@@ -40,6 +38,8 @@ import { InventoryPage } from './components/pages/InventoryPage';
 import { FinancePage } from './components/pages/FinancePage';
 import { EmployeesPage } from './components/pages/EmployeesPage';
 import { SettingsPage } from './components/pages/SettingsPage';
+import { ApiError, NetworkError, SESSION_EXPIRED_EVENT, apiRequest, clearSession, getAccessToken } from './lib/api';
+import { useServerMenu } from './lib/menu';
 
 interface UserSession {
   id: string;
@@ -51,8 +51,18 @@ interface UserSession {
 export default function App() {
   // 1. Auth State
   const [user, setUser] = useState<UserSession | null>(() => {
+    // Sessiya faqat server bergan token bilan birga haqiqiy (eski demo sessiyalar bekor qilinadi)
     const saved = localStorage.getItem('pos_user');
-    return saved ? JSON.parse(saved) : null;
+    if (!saved || !getAccessToken()) {
+      clearSession();
+      return null;
+    }
+    try {
+      return JSON.parse(saved);
+    } catch {
+      clearSession();
+      return null;
+    }
   });
 
   // 2. Navigation State
@@ -61,13 +71,28 @@ export default function App() {
   const [mobilePosTab, setMobilePosTab] = useState<'grid' | 'cart' | 'receipt'>('grid');
 
   // 3. POS Kassa State
-  const [categories, setCategories] = useState<Category[]>(initialCategories);
-  const [dishes, setDishes] = useState<Dish[]>(() => {
-    const saved = localStorage.getItem('pos_dishes');
-    return saved ? JSON.parse(saved) : initialDishes;
-  });
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('fav');
   const [cart, setCart] = useState<CartItem[]>([]);
+
+  // Menyu (kategoriya + taomlar) — lokal server / PostgreSQL dan, real-time yangilanadi.
+  // Menyu o'zgarganda savatdagi narxlar yangilanadi, sotuvdan olingan taomlar olib tashlanadi.
+  const menu = useServerMenu(!!user, (freshDishes) => {
+    // Callback har renderda yangilanadi, shuning uchun `cart` — joriy savat
+    const byId = new Map(freshDishes.map((d) => [d.id, d]));
+    const removed = cart.filter((item) => !byId.get(item.dishId)?.isAvailable).map((item) => item.name);
+    setCart((prev) =>
+      prev.flatMap((item) => {
+        const dish = byId.get(item.dishId);
+        if (!dish || !dish.isAvailable) return [];
+        return [{ ...item, name: dish.name, price: dish.price }];
+      }),
+    );
+    if (removed.length) {
+      showNotification(`Sotuvda yo'q, savatdan olindi: ${removed.join(', ')}`, 'info');
+    }
+  });
+  const categories: Category[] = menu.categories;
+  const dishes: Dish[] = menu.dishes;
   const [selectedTable, setSelectedTable] = useState<string>('Stol 1');
   const [orderType, setOrderType] = useState<'DINE_IN' | 'TAKEAWAY'>('DINE_IN');
   const [discountPercent, setDiscountPercent] = useState<number>(0);
@@ -121,10 +146,24 @@ export default function App() {
     };
   }, []);
 
-  // Save dishes to storage
+  // Eski versiyadagi lokal (mock) menyu nusxasini tozalash — menyu endi faqat serverdan
   useEffect(() => {
-    localStorage.setItem('pos_dishes', JSON.stringify(dishes));
-  }, [dishes]);
+    try {
+      localStorage.removeItem('pos_dishes');
+    } catch {
+      /* storage bloklangan */
+    }
+  }, []);
+
+  // Refresh token ham yaroqsiz bo'lsa — PIN ekraniga qaytish
+  useEffect(() => {
+    const onExpired = () => {
+      setCart([]);
+      setUser(null);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
 
   // Notification helper
   const showNotification = (message: string, type: 'success' | 'info' = 'success') => {
@@ -134,6 +173,10 @@ export default function App() {
 
   // Add Dish to Cart
   const handleAddDish = (dish: Dish) => {
+    if (!dish.isAvailable) {
+      showNotification(`"${dish.name}" hozir sotuvda yo'q`, 'info');
+      return;
+    }
     setCart((prev) => {
       const existing = prev.find((item) => item.dishId === dish.id);
       if (existing) {
@@ -319,20 +362,57 @@ export default function App() {
     setActiveTab('kassa');
   };
 
-  const handleToggleProductAvailability = (dishId: string) => {
-    setDishes((prev) =>
-      prev.map((d) => (d.id === dishId ? { ...d, isAvailable: !d.isAvailable } : d))
-    );
+  const apiErrorText = (e: unknown) =>
+    e instanceof NetworkError ? 'Lokal server bilan aloqa yo\'q' : e instanceof ApiError ? e.message : 'Kutilmagan xatolik';
+
+  // "Tugadi" / "Mavjud" — serverda saqlanadi (ADMIN va CASHIER ruxsati bor)
+  const handleToggleProductAvailability = async (dishId: string) => {
+    const dish = dishes.find((d) => d.id === dishId);
+    if (!dish) return;
+    try {
+      await apiRequest(`/menu-items/${dishId}/availability`, {
+        method: 'PATCH',
+        body: { isAvailable: !dish.isAvailable },
+      });
+      menu.patchDish(dishId, { isAvailable: !dish.isAvailable });
+      showNotification(dish.isAvailable ? `"${dish.name}" sotuvdan olindi` : `"${dish.name}" yana sotuvda`);
+    } catch (e) {
+      showNotification(apiErrorText(e), 'info');
+    }
   };
 
-  const handleAddProduct = (newDish: Dish) => {
-    setDishes((prev) => [newDish, ...prev]);
-    showNotification('Yangi taom muvaffaqiyatli qo\'shildi!');
+  // Taom qo'shish/tahrirlash — faqat ADMIN (server 403 qaytaradi). Natija socket orqali hamma kassaga tarqaladi.
+  const handleAddProduct = async (newDish: Dish) => {
+    try {
+      await apiRequest('/menu-items', {
+        method: 'POST',
+        body: { name: newDish.name, price: newDish.price, categoryId: newDish.categoryId, unit: newDish.unit },
+      });
+      await menu.reload();
+      showNotification('Yangi taom muvaffaqiyatli qo\'shildi!');
+    } catch (e) {
+      showNotification(apiErrorText(e), 'info');
+    }
   };
 
-  const handleUpdateProduct = (updated: Dish) => {
-    setDishes((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
-    showNotification('Taom ma\'lumotlari yangilandi!');
+  const handleUpdateProduct = async (updated: Dish) => {
+    const current = dishes.find((d) => d.id === updated.id);
+    try {
+      if (current && current.price !== updated.price) {
+        await apiRequest(`/menu-items/${updated.id}/price`, {
+          method: 'PATCH',
+          body: { newPrice: updated.price, reason: 'POS kassadan o\'zgartirildi' },
+        });
+      }
+      await apiRequest(`/menu-items/${updated.id}`, {
+        method: 'PATCH',
+        body: { name: updated.name, categoryId: updated.categoryId, unit: updated.unit },
+      });
+      await menu.reload();
+      showNotification('Taom ma\'lumotlari yangilandi!');
+    } catch (e) {
+      showNotification(apiErrorText(e), 'info');
+    }
   };
 
   const handleAdjustStock = (itemId: string, newAmount: number) => {
@@ -371,7 +451,8 @@ export default function App() {
         userName={user.name}
         userRole={user.role}
         onLogout={() => {
-          localStorage.removeItem('pos_user');
+          clearSession();
+          setCart([]);
           setUser(null);
         }}
         onToggleNav={() => setIsNavOpen(true)}
@@ -430,6 +511,15 @@ export default function App() {
                 Chek
               </button>
             </div>
+
+            {menu.error && (
+              <div className="mb-2 flex items-center justify-between gap-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold px-3 py-2 rounded-xl">
+                <span>Menyuni serverdan yangilab bo&apos;lmadi: {menu.error}</span>
+                <button onClick={menu.reload} className="px-2.5 py-1 bg-white border border-rose-200 rounded-lg">
+                  Qayta urinish
+                </button>
+              </div>
+            )}
 
             {/* 3-Column Grid on Desktop / Wide Tablet (42% - 33% - 25% matching reference image) */}
             <div className="flex-1 flex gap-3 lg:gap-4 overflow-hidden">
@@ -530,6 +620,7 @@ export default function App() {
             onToggleAvailability={handleToggleProductAvailability}
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
+            canManageMenu={user.role === 'ADMIN'}
           />
         )}
 

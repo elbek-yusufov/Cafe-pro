@@ -346,7 +346,7 @@ export class OrdersService {
       include: { order: true },
     });
 
-    this.eventsGateway.server?.emit('kds:item-status', {
+    this.eventsGateway.emitKdsItemStatus({
       itemId,
       orderId: updated.orderId,
       status,
@@ -655,35 +655,58 @@ export class OrdersService {
    * Taom kiritish va narxlarni muzlatish yordamchisi
    */
   private async insertOrderItem(tx: any, orderId: string, itemDto: AddOrderItemDto, deviceId?: string) {
-    const menuItem = await tx.menuItem.findUnique({
-      where: { id: itemDto.menuItemId },
+    // Faqat o'chirilmagan, sotuvda bor va faol kategoriyadagi taom buyurtma qilinadi
+    const menuItem = await tx.menuItem.findFirst({
+      where: { id: itemDto.menuItemId, deletedAt: null },
+      include: { category: { select: { isActive: true, deletedAt: true } } },
     });
 
     if (!menuItem) {
-      throw new NotFoundException('Tanlangan taom topilmadi');
+      throw new NotFoundException('Tanlangan taom topilmadi yoki menyudan o\'chirilgan');
+    }
+    if (!menuItem.isAvailable) {
+      throw new BadRequestException(`"${menuItem.name}" hozir sotuvda yo'q (Tugagan)`);
+    }
+    if (!menuItem.category || !menuItem.category.isActive || menuItem.category.deletedAt) {
+      throw new BadRequestException(`"${menuItem.name}" kategoriyasi faol emas`);
     }
 
     let unitPrice = menuItem.price;
     let costPrice = menuItem.costPrice;
     let itemName = menuItem.name;
 
-    // Variant tanlangan bo'lsa
+    // Variant tanlangan bo'lsa — aynan shu taomga tegishli va o'chirilmagan bo'lishi shart
     if (itemDto.variantId) {
-      const variant = await tx.menuItemVariant.findUnique({
-        where: { id: itemDto.variantId },
+      const variant = await tx.menuItemVariant.findFirst({
+        where: { id: itemDto.variantId, menuItemId: menuItem.id, deletedAt: null },
       });
-      if (variant) {
-        unitPrice = variant.price;
-        costPrice = variant.costPrice;
-        itemName = `${menuItem.name} (${variant.name})`;
+      if (!variant) {
+        throw new BadRequestException('Tanlangan variant ushbu taomga tegishli emas yoki o\'chirilgan');
       }
+      unitPrice = variant.price;
+      costPrice = variant.costPrice;
+      itemName = `${menuItem.name} (${variant.name})`;
     }
 
-    // Modifierlar qo'shimcha narxi
+    // Modifierlar narxi BAZADAN olinadi (mijoz yuborgan narxga ishonilmaydi)
     let modifiersExtraPrice = 0;
+    let storedModifiers: { modifierId: string; name: string; price: number }[] | undefined;
     if (itemDto.modifiers && itemDto.modifiers.length > 0) {
-      for (const mod of itemDto.modifiers) {
-        modifiersExtraPrice += mod.price || 0;
+      const ids = [...new Set(itemDto.modifiers.map((m) => m.modifierId))];
+      const rows = await tx.modifier.findMany({
+        where: { id: { in: ids }, deletedAt: null, group: { menuItemId: menuItem.id, deletedAt: null } },
+      });
+      if (rows.length !== ids.length) {
+        throw new BadRequestException('Tanlangan qo\'shimchalardan biri ushbu taomga tegishli emas');
+      }
+      const byId = new Map<string, any>(rows.map((r: any) => [r.id, r]));
+      storedModifiers = itemDto.modifiers.map((m) => {
+        const row = byId.get(m.modifierId);
+        return { modifierId: row.id, name: row.name, price: row.price };
+      });
+      for (const mod of storedModifiers) {
+        modifiersExtraPrice += mod.price;
+        costPrice += byId.get(mod.modifierId).costPrice || 0;
       }
     }
 
@@ -703,7 +726,7 @@ export class OrdersService {
         quantity: itemDto.quantity,
         totalPrice: finalTotalPrice,
         notes: itemDto.notes,
-        modifiers: itemDto.modifiers ? (itemDto.modifiers as any) : undefined,
+        modifiers: storedModifiers ? (storedModifiers as any) : undefined,
         status: OrderItemStatus.PENDING,
         deviceId,
       },

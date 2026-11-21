@@ -72,7 +72,8 @@ export class SyncService {
     const cloudUrl = process.env.CLOUD_API_URL;
     const apiKey = process.env.CLOUD_SYNC_API_KEY;
 
-    if (!cloudUrl) {
+    // Kalitsiz bulutga hech narsa yuborilmaydi (hardcoded default kalit yo'q)
+    if (!cloudUrl || !apiKey) {
       this.isOnline = false;
       return 0;
     }
@@ -105,7 +106,7 @@ export class SyncService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-sync-api-key': apiKey || 'sync-secret-auth-key-change-in-prod',
+          'x-sync-api-key': apiKey,
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -162,7 +163,7 @@ export class SyncService {
   async pullUpdates(): Promise<boolean> {
     const cloudUrl = process.env.CLOUD_API_URL;
     const apiKey = process.env.CLOUD_SYNC_API_KEY;
-    if (!cloudUrl) return false;
+    if (!cloudUrl || !apiKey) return false;
 
     try {
       const since = this.lastSyncedAt ? this.lastSyncedAt.toISOString() : '1970-01-01T00:00:00.000Z';
@@ -171,7 +172,7 @@ export class SyncService {
 
       const res = await fetch(`${cloudUrl}/sync/pull?since=${encodeURIComponent(since)}`, {
         headers: {
-          'x-sync-api-key': apiKey || 'sync-secret-auth-key-change-in-prod',
+          'x-sync-api-key': apiKey,
         },
         signal: controller.signal,
       });
@@ -240,7 +241,7 @@ export class SyncService {
   private async broadcastStatus() {
     try {
       const status = await this.getStatus();
-      this.eventsGateway.server?.emit('sync:status', status);
+      this.eventsGateway.emitSyncStatus(status);
     } catch {
       // ignore
     }

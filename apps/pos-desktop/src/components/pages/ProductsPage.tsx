@@ -3,6 +3,7 @@ import { Plus, Search, Edit2, Trash2, CheckCircle, XCircle } from 'lucide-react'
 import { Dish, Category } from '../../types/pos';
 import { formatCurrency } from '@oshxona/shared';
 import { DishImage } from '../common/DishImage';
+import { UNIT_LABELS } from '../../lib/menu';
 
 interface ProductsPageProps {
   dishes: Dish[];
@@ -10,6 +11,8 @@ interface ProductsPageProps {
   onToggleAvailability: (dishId: string) => void;
   onAddProduct: (dish: Dish) => void;
   onUpdateProduct: (dish: Dish) => void;
+  /** Taom qo'shish/tahrirlash faqat ADMIN uchun (server ham tekshiradi) */
+  canManageMenu?: boolean;
 }
 
 export const ProductsPage: React.FC<ProductsPageProps> = ({
@@ -18,6 +21,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
   onToggleAvailability,
   onAddProduct,
   onUpdateProduct,
+  canManageMenu = false,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedCat, setSelectedCat] = useState('ALL');
@@ -28,8 +32,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
   const [name, setName] = useState('');
   const [price, setPrice] = useState<number>(25000);
   const [categoryId, setCategoryId] = useState(categories[1]?.id || 'cat-1');
-  const [unit, setUnit] = useState('PORSIYA');
-  const [imageType, setImageType] = useState('somsa');
+  const [unit, setUnit] = useState('PORTION');
 
   const filtered = useMemo(() => {
     return dishes.filter((d) => {
@@ -44,8 +47,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
     setName('');
     setPrice(30000);
     setCategoryId(categories[1]?.id || 'cat-1');
-    setUnit('PORSIYA');
-    setImageType('somsa');
+    setUnit('PORTION');
     setIsModalOpen(true);
   };
 
@@ -55,7 +57,6 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
     setPrice(dish.price);
     setCategoryId(dish.categoryId);
     setUnit(dish.unit);
-    setImageType(dish.image || 'somsa');
     setIsModalOpen(true);
   };
 
@@ -72,7 +73,6 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
         price,
         categoryId,
         unit,
-        image: imageType,
       });
     } else {
       const newDish: Dish = {
@@ -82,7 +82,6 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
         categoryId,
         unit,
         isAvailable: true,
-        image: imageType,
         isFavorite: false,
       };
       onAddProduct(newDish);
@@ -101,6 +100,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
           <p className="text-xs text-slate-500">Restoran taomlari narxi, kategoriyasi va mavjudligini sozlash</p>
         </div>
 
+        {canManageMenu && (
         <button
           onClick={handleOpenAdd}
           className="px-4 py-2.5 bg-teal-600 hover:bg-teal-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center gap-1.5 touch-press"
@@ -108,6 +108,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
           <Plus className="w-4 h-4" />
           <span>Yangi Taom Qo&apos;shish</span>
         </button>
+        )}
       </div>
 
       {/* 2. Search & Category Filters */}
@@ -168,12 +169,12 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
                   <tr key={dish.id} className="hover:bg-slate-50/80 transition">
                     <td className="py-2.5 px-4">
                       <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-50 border border-slate-100">
-                        <DishImage type={dish.image || 'somsa'} className="w-full h-full" />
+                        <DishImage type={dish.image ?? ''} imageUrl={dish.imageUrl} alt={dish.name} className="w-full h-full" />
                       </div>
                     </td>
                     <td className="py-2.5 px-4 font-bold text-slate-900">{dish.name}</td>
                     <td className="py-2.5 px-4 text-slate-500">{catObj?.name || 'Umumiy'}</td>
-                    <td className="py-2.5 px-4 text-slate-500">{dish.unit}</td>
+                    <td className="py-2.5 px-4 text-slate-500">{UNIT_LABELS[dish.unit] || dish.unit}</td>
                     <td className="py-2.5 px-4 font-mono font-black text-slate-900">
                       {formatCurrency(dish.price)}
                     </td>
@@ -200,6 +201,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
                       </button>
                     </td>
                     <td className="py-2.5 px-4 text-right">
+                      {canManageMenu && (
                       <button
                         onClick={() => handleOpenEdit(dish)}
                         className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition"
@@ -207,6 +209,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -261,24 +264,9 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({
                 </select>
               </div>
 
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Rasm uslubi</label>
-                <select
-                  value={imageType}
-                  onChange={(e) => setImageType(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-1 focus:ring-teal-500"
-                >
-                  <option value="somsa">Tandir Somsa</option>
-                  <option value="cherry_juice">Sharbat Idish</option>
-                  <option value="sandwich">Klab Sendvich</option>
-                  <option value="orange_fresh">Apelsin Fresh</option>
-                  <option value="coffee_cup">Qahva Qadog&apos;i</option>
-                  <option value="takeaway_bag">Takeout Kombo Paket</option>
-                  <option value="osh">Toshkent To&apos;y Oshi</option>
-                  <option value="cola_can">Gazlangan Cola</option>
-                  <option value="qozon_kabob">Qozon Kabob Go&apos;shti</option>
-                </select>
-              </div>
+              <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                Taom rasmi, tavsifi va tannarxi Admin paneldagi &quot;Menyu va Narxlar&quot; bo&apos;limida boshqariladi.
+              </p>
             </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">

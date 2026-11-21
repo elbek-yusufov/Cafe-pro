@@ -11,6 +11,7 @@ import {
   ChefHat,
   QrCode,
   Armchair,
+  FolderTree,
 } from 'lucide-react';
 
 export function Sidebar() {
@@ -20,6 +21,7 @@ export function Sidebar() {
     { name: 'Oshxona KDS Ekran', href: '/kds', icon: ChefHat },
     { name: 'Mijoz QR Menyu', href: '/qr-menu', icon: QrCode },
     { name: 'Menyu va Narxlar', href: '/menu', icon: UtensilsCrossed },
+    { name: 'Kategoriyalar', href: '/categories', icon: FolderTree },
     { name: 'Ombor va Xomashyo', href: '/stock', icon: Package },
     { name: 'Hisobotlar va Tahlil', href: '/reports', icon: BarChart3 },
     { name: 'Sotuvlar & Cheklar', href: '/sales', icon: Receipt },

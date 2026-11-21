@@ -18,6 +18,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@oshxona/db';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Actor } from '../audit/audit.service';
 
 @ApiTags('Menyu — Kategoriyalar')
 @ApiBearerAuth()
@@ -29,16 +30,17 @@ export class CategoriesController {
   @Post()
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Yangi kategoriya yaratish (Faqat Admin)' })
-  create(@Body() dto: CreateCategoryDto, @CurrentUser('deviceId') deviceId?: string) {
-    return this.categoriesService.create(dto, deviceId);
+  create(@Body() dto: CreateCategoryDto, @CurrentUser() user: Actor) {
+    return this.categoriesService.create(dto, user);
   }
 
   @Get()
   @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER)
   @ApiOperation({ summary: 'Barcha faol kategoriyalar ro\'yxati' })
   @ApiQuery({ name: 'includeInactive', required: false, type: Boolean })
-  findAll(@Query('includeInactive') includeInactive?: string) {
-    return this.categoriesService.findAll(includeInactive === 'true');
+  findAll(@Query('includeInactive') includeInactive?: string, @CurrentUser('role') role?: string) {
+    // Nofaol kategoriyalarni faqat admin ko'radi
+    return this.categoriesService.findAll(includeInactive === 'true' && role === Role.ADMIN);
   }
 
   @Get(':id')
@@ -54,15 +56,15 @@ export class CategoriesController {
   update(
     @Param('id') id: string,
     @Body() dto: UpdateCategoryDto,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: Actor,
   ) {
-    return this.categoriesService.update(id, dto, deviceId);
+    return this.categoriesService.update(id, dto, user);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Kategoriyani o\'chirish (Faqat Admin, Soft-delete)' })
-  remove(@Param('id') id: string, @CurrentUser('deviceId') deviceId?: string) {
-    return this.categoriesService.remove(id, deviceId);
+  remove(@Param('id') id: string, @CurrentUser() user: Actor) {
+    return this.categoriesService.remove(id, user);
   }
 }

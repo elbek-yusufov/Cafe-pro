@@ -12,3 +12,10 @@ body {
   background: var(--background);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
 }
+
+@layer components {
+  /* Admin formalaridagi standart kiritish maydoni */
+  .input {
+    @apply w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500;
+  }
+}

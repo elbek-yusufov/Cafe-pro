@@ -21,6 +21,24 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@oshxona/db';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { UpdateAvailabilityDto } from './dto/update-availability.dto';
+import { Actor } from '../audit/audit.service';
+
+/** Tannarx va foyda ma'lumotlari faqat ADMIN uchun — kassir/ofitsiantga yuborilmaydi. */
+const ADMIN_ONLY_FIELDS = ['costPrice', 'profit', 'markupPercent', 'marginPercent', 'recipes'];
+function forRole<T extends Record<string, any>>(item: T, role?: string): T {
+  if (role === Role.ADMIN) return item;
+  const copy: Record<string, any> = { ...item };
+  for (const f of ADMIN_ONLY_FIELDS) delete copy[f];
+  if (Array.isArray(copy.variants)) copy.variants = copy.variants.map(({ costPrice, ...v }: any) => v);
+  if (Array.isArray(copy.modifierGroups)) {
+    copy.modifierGroups = copy.modifierGroups.map((g: any) => ({
+      ...g,
+      modifiers: (g.modifiers || []).map(({ costPrice, ...m }: any) => m),
+    }));
+  }
+  return copy as T;
+}
 
 @ApiTags('Menyu — Taomlar va Narxlar')
 @ApiBearerAuth()
@@ -32,8 +50,8 @@ export class MenuItemsController {
   @Post()
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Yangi taom yaratish (Faqat Admin)' })
-  create(@Body() dto: CreateMenuItemDto, @CurrentUser('deviceId') deviceId?: string) {
-    return this.menuItemsService.create(dto, deviceId);
+  create(@Body() dto: CreateMenuItemDto, @CurrentUser() user: Actor) {
+    return this.menuItemsService.create(dto, user);
   }
 
   @Get()
@@ -45,29 +63,31 @@ export class MenuItemsController {
   @ApiQuery({ name: 'isFeatured', required: false, type: Boolean })
   @ApiQuery({ name: 'isAvailable', required: false, type: Boolean })
   @ApiQuery({ name: 'includeInactive', required: false, type: Boolean })
-  findAll(
+  async findAll(
     @Query('categoryId') categoryId?: string,
     @Query('search') search?: string,
     @Query('kitchenStationId') kitchenStationId?: string,
     @Query('isFeatured') isFeatured?: string,
     @Query('isAvailable') isAvailable?: string,
     @Query('includeInactive') includeInactive?: string,
+    @CurrentUser('role') role?: string,
   ) {
-    return this.menuItemsService.findAll({
+    const items = await this.menuItemsService.findAll({
       categoryId,
       search,
       kitchenStationId,
       isFeatured: isFeatured !== undefined ? isFeatured === 'true' : undefined,
       isAvailable: isAvailable !== undefined ? isAvailable === 'true' : undefined,
-      includeInactive: includeInactive === 'true',
+      includeInactive: includeInactive === 'true' && role === Role.ADMIN,
     });
+    return items.map((i) => forRole(i, role));
   }
 
   @Get(':id')
   @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER)
   @ApiOperation({ summary: 'Bitta taom ma\'lumotlari, variantlari va qo\'shimchalari' })
-  findOne(@Param('id') id: string) {
-    return this.menuItemsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser('role') role?: string) {
+    return forRole(await this.menuItemsService.findOne(id), role);
   }
 
   @Patch(':id')
@@ -76,9 +96,9 @@ export class MenuItemsController {
   update(
     @Param('id') id: string,
     @Body() dto: UpdateMenuItemDto,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: Actor,
   ) {
-    return this.menuItemsService.update(id, dto, deviceId);
+    return this.menuItemsService.update(id, dto, user);
   }
 
   @Patch(':id/price')
@@ -87,10 +107,9 @@ export class MenuItemsController {
   updatePrice(
     @Param('id') id: string,
     @Body() dto: UpdatePriceDto,
-    @CurrentUser('username') username?: string,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: Actor,
   ) {
-    return this.menuItemsService.updatePrice(id, dto, username || 'ADMIN', deviceId);
+    return this.menuItemsService.updatePrice(id, dto, user);
   }
 
   @Patch(':id/availability')
@@ -98,17 +117,17 @@ export class MenuItemsController {
   @ApiOperation({ summary: 'Taomning mavjudligini o\'zgartirish ("Tugadi" belgisi)' })
   toggleAvailability(
     @Param('id') id: string,
-    @Body('isAvailable') isAvailable: boolean,
-    @CurrentUser('deviceId') deviceId?: string,
+    @Body() dto: UpdateAvailabilityDto,
+    @CurrentUser() user: Actor,
   ) {
-    return this.menuItemsService.toggleAvailability(id, isAvailable, deviceId);
+    return this.menuItemsService.toggleAvailability(id, dto.isAvailable, user);
   }
 
   @Delete(':id')
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'Taomni o\'chirish (Faqat Admin, Soft-delete)' })
-  remove(@Param('id') id: string, @CurrentUser('deviceId') deviceId?: string) {
-    return this.menuItemsService.remove(id, deviceId);
+  remove(@Param('id') id: string, @CurrentUser() user: Actor) {
+    return this.menuItemsService.remove(id, user);
   }
 
   @Post(':id/variants')
@@ -117,9 +136,9 @@ export class MenuItemsController {
   addVariant(
     @Param('id') id: string,
     @Body() dto: CreateVariantDto,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: Actor,
   ) {
-    return this.menuItemsService.addVariant(id, dto, deviceId);
+    return this.menuItemsService.addVariant(id, dto, user);
   }
 
   @Delete('variants/:variantId')
@@ -127,9 +146,9 @@ export class MenuItemsController {
   @ApiOperation({ summary: 'Taom variantini o\'chirish' })
   deleteVariant(
     @Param('variantId') variantId: string,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: Actor,
   ) {
-    return this.menuItemsService.deleteVariant(variantId, deviceId);
+    return this.menuItemsService.deleteVariant(variantId, user);
   }
 
   @Post(':id/modifier-groups')
@@ -138,9 +157,9 @@ export class MenuItemsController {
   addModifierGroup(
     @Param('id') id: string,
     @Body() dto: CreateModifierGroupDto,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: Actor,
   ) {
-    return this.menuItemsService.addModifierGroup(id, dto, deviceId);
+    return this.menuItemsService.addModifierGroup(id, dto, user);
   }
 
   @Get(':id/price-history')
