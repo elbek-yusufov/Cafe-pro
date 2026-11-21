@@ -13,6 +13,7 @@ export interface Dish {
   unit: string;
   isAvailable: boolean;
   image?: string;
+  imageUrl?: string;
   isFavorite?: boolean;
   description?: string;
 }

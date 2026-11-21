@@ -49,7 +49,7 @@ export const ReceiptPreview: React.FC<ReceiptPreviewProps> = ({
         </h2>
 
         {/* Paper Receipt Box */}
-        <div className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4 font-mono text-xs text-slate-700 shadow-inner overflow-hidden">
+        <div id="printable-receipt" className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4 font-mono text-xs text-slate-700 shadow-inner overflow-hidden">
           {/* Header Info */}
           <div className="text-center pb-3 border-b border-dashed border-slate-300 space-y-1">
             <h3 className="font-extrabold text-sm text-slate-900 tracking-wider">

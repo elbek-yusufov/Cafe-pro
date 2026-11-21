@@ -265,6 +265,11 @@ export default function App() {
   // Print Receipt Button Action
   const handlePrintReceipt = () => {
     if (cart.length === 0) return;
+    try {
+      window.print();
+    } catch {
+      // headless or non-browser environment fallback
+    }
     showNotification(`Chek printerga yuborildi (#${currentOrderNumber})`, 'success');
   };
 

@@ -38,3 +38,29 @@
     background: #94a3b8;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   Thermal Receipt Print Styles (80mm ESC/POS compatibility)
+───────────────────────────────────────────────────────────── */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-receipt, #printable-receipt * {
+    visibility: visible;
+  }
+  #printable-receipt {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 78mm;
+    margin: 0;
+    padding: 8px !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 11px !important;
+    font-family: monospace !important;
+  }
+}

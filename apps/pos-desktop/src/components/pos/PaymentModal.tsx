@@ -180,13 +180,18 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 ))}
               </div>
 
-              {/* Change calculation */}
+              {/* Change calculation or warning */}
               <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
                 <span className="text-slate-600 font-medium">Qaytim (Mijozga beriladi):</span>
-                <span className="font-mono text-sm font-black text-emerald-600">
-                  {formatCurrency(changeAmount)}
+                <span className={`font-mono text-sm font-black ${isExactOrMore ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  {isExactOrMore ? formatCurrency(changeAmount) : `-${formatCurrency(orderTotal - receivedAmount)}`}
                 </span>
               </div>
+              {!isExactOrMore && (
+                <p className="text-[11px] text-rose-600 font-bold bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200 text-center">
+                  Yetarli mablag&apos; kiritilmadi! Kamida {formatCurrency(orderTotal)} bo&apos;lishi kerak.
+                </p>
+              )}
             </div>
           )}
 

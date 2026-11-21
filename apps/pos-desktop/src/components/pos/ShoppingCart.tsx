@@ -164,9 +164,16 @@ export const ShoppingCart: React.FC<ShoppingCartProps> = ({
 
       {/* 2. BOTTOM CARD: Payment Options (3 large teal buttons matching reference image) */}
       <div className="bg-white rounded-3xl p-4 lg:p-5 border border-slate-200/90 shadow-xs shrink-0">
-        <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500 mb-3">
-          To&apos;lov Turlari
-        </h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+            To&apos;lov Turlari
+          </h3>
+          {cart.length === 0 && (
+            <span className="text-[10px] text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+              Savat bo&apos;sh
+            </span>
+          )}
+        </div>
 
         <div className="grid grid-cols-3 gap-2.5">
           {/* Cash Button */}
