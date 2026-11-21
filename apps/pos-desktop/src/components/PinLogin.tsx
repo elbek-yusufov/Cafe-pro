@@ -1,21 +1,93 @@
-import React, { useState } from 'react';
-import { Delete, Lock, ShieldCheck, UserCheck } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Delete, RefreshCw } from 'lucide-react';
+import {
+  ApiError,
+  AuthTokens,
+  NetworkError,
+  SessionUser,
+  apiRequest,
+  getApiBaseUrl,
+  getDeviceId,
+  saveSession,
+} from '../lib/api';
 
 interface PinLoginProps {
   onSuccess: (user: { id: string; name: string; username: string; role: string }) => void;
 }
 
+interface StaffMember {
+  id: string;
+  name: string;
+  username?: string;
+  role: string;
+}
+
+const LAST_USER_KEY = 'pos_last_user_id';
+const PIN_LENGTH = 4;
+
+const ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Admin',
+  CASHIER: 'Kassir',
+  WAITER: 'Ofitsiant',
+};
+
 export const PinLogin: React.FC<PinLoginProps> = ({ onSuccess }) => {
   const [pin, setPin] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [staffLoading, setStaffLoading] = useState<boolean>(true);
+  const [staffError, setStaffError] = useState<string | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+
+  const selectedUser = staff.find((s) => s.id === selectedUserId) || null;
+
+  const loadStaff = useCallback(async () => {
+    setStaffLoading(true);
+    setStaffError(null);
+    try {
+      const list = await apiRequest<StaffMember[]>('/auth/staff', { auth: false });
+      setStaff(list);
+      let lastId: string | null = null;
+      try {
+        lastId = localStorage.getItem(LAST_USER_KEY);
+      } catch {
+        /* storage bloklangan */
+      }
+      if (lastId && list.some((s) => s.id === lastId)) setSelectedUserId(lastId);
+      else if (list.length === 1) setSelectedUserId(list[0].id);
+    } catch (e) {
+      setStaffError(
+        e instanceof NetworkError
+          ? `Lokal server bilan aloqa yo'q (${getApiBaseUrl()})`
+          : (e as Error).message || 'Xodimlar ro\'yxatini yuklab bo\'lmadi',
+      );
+    } finally {
+      setStaffLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStaff();
+  }, [loadStaff]);
+
+  const handleSelectUser = (id: string) => {
+    setSelectedUserId(id);
+    setPin('');
+    setError(null);
+  };
 
   const handleKeyPress = (num: string) => {
-    if (pin.length < 4) {
+    if (loading) return;
+    if (!selectedUser) {
+      setError('Avval xodimni tanlang');
+      return;
+    }
+    if (pin.length < PIN_LENGTH) {
       const nextPin = pin + num;
       setPin(nextPin);
       setError(null);
-      if (nextPin.length === 4) {
+      if (nextPin.length === PIN_LENGTH) {
         verifyPin(nextPin);
       }
     }
@@ -32,42 +104,28 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onSuccess }) => {
   };
 
   const verifyPin = async (enteredPin: string) => {
+    if (!selectedUser) return;
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:3000/auth/pin-login', {
+      const tokens = await apiRequest<AuthTokens>('/auth/pin-login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: enteredPin }),
+        auth: false,
+        body: { userIdentifier: selectedUser.id, pin: enteredPin, deviceId: getDeviceId() },
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        localStorage.setItem('pos_token', data.accessToken);
-        localStorage.setItem('pos_user', JSON.stringify(data.user));
-        onSuccess(data.user);
-      } else {
-        const errJson = await res.json();
-        setError(errJson.message || 'PIN kod noto\'g\'ri');
-        setPin('');
+      saveSession(tokens);
+      try {
+        localStorage.setItem(LAST_USER_KEY, tokens.user.id);
+      } catch {
+        /* storage bloklangan */
       }
+      const user: SessionUser = tokens.user;
+      onSuccess({ id: user.id, name: user.name, username: user.username, role: user.role });
     } catch (e) {
-      // Offline fallback: demo accounts
-      if (enteredPin === '1111') {
-        const user = { id: 'usr-kassir1', name: 'Dilshod Qosimov', username: 'kassir1', role: 'CASHIER' };
-        localStorage.setItem('pos_user', JSON.stringify(user));
-        onSuccess(user);
-      } else if (enteredPin === '2222') {
-        const user = { id: 'usr-kassir2', name: 'Jasur Aliyev', username: 'kassir2', role: 'CASHIER' };
-        localStorage.setItem('pos_user', JSON.stringify(user));
-        onSuccess(user);
-      } else if (enteredPin === '0000') {
-        const user = { id: 'usr-admin', name: 'Bosh Boshqaruvchi', username: 'admin', role: 'ADMIN' };
-        localStorage.setItem('pos_user', JSON.stringify(user));
-        onSuccess(user);
-      } else {
-        setError('PIN kod noto\'g\'ri! (Kassir 1: 1111, Kassir 2: 2222, Admin: 0000)');
-        setPin('');
-      }
+      // Demo/offline kirish yo'q: server tasdiqlamasa kirish taqiqlanadi.
+      if (e instanceof NetworkError) setError(`Lokal server bilan aloqa yo'q (${getApiBaseUrl()})`);
+      else if (e instanceof ApiError) setError(e.message);
+      else setError('Kirishda kutilmagan xatolik');
+      setPin('');
     } finally {
       setLoading(false);
     }
@@ -87,7 +145,15 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onSuccess }) => {
         </div>
 
         <h2 className="text-lg font-black text-slate-800 tracking-tight mt-1">Kassaga Kirish</h2>
-        <p className="text-xs text-slate-500 mt-0.5">4 xonali shaxsiy PIN kodni kiriting</p>
+        <p className="text-xs text-slate-500 mt-0.5 text-center">
+          {selectedUser ? (
+            <>
+              <span className="font-bold text-teal-700">{selectedUser.name}</span> — 4 xonali shaxsiy PIN kodni kiriting
+            </>
+          ) : (
+            'Xodimni tanlang, so\'ng 4 xonali PIN kodni kiriting'
+          )}
+        </p>
 
         {/* PIN Indicators */}
         <div className="flex items-center gap-4 my-6">
@@ -141,31 +207,44 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onSuccess }) => {
           </button>
         </div>
 
-        {/* Fast Demo Accounts */}
+        {/* Xodimni tanlash (GET /auth/staff) */}
         <div className="w-full pt-5 mt-5 border-t border-slate-100">
           <p className="text-[11px] font-bold text-slate-400 text-center uppercase tracking-wider mb-2">
-            Tezkor Kassir Tanlash (Demo)
+            Xodimni Tanlash
           </p>
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              onClick={() => verifyPin('1111')}
-              className="py-1.5 px-2 bg-slate-100 hover:bg-teal-50 hover:text-teal-700 rounded-xl text-[11px] font-bold text-slate-700 border border-slate-200 transition"
-            >
-              Kassir 1 (1111)
-            </button>
-            <button
-              onClick={() => verifyPin('2222')}
-              className="py-1.5 px-2 bg-slate-100 hover:bg-teal-50 hover:text-teal-700 rounded-xl text-[11px] font-bold text-slate-700 border border-slate-200 transition"
-            >
-              Kassir 2 (2222)
-            </button>
-            <button
-              onClick={() => verifyPin('0000')}
-              className="py-1.5 px-2 bg-slate-100 hover:bg-teal-50 hover:text-teal-700 rounded-xl text-[11px] font-bold text-slate-700 border border-slate-200 transition"
-            >
-              Admin (0000)
-            </button>
-          </div>
+          {staffLoading ? (
+            <p className="text-[11px] text-slate-400 text-center py-2">Yuklanmoqda…</p>
+          ) : staffError ? (
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-[11px] font-bold text-rose-600 text-center">{staffError}</p>
+              <button
+                onClick={loadStaff}
+                className="flex items-center gap-1.5 py-1.5 px-3 bg-slate-100 hover:bg-teal-50 hover:text-teal-700 rounded-xl text-[11px] font-bold text-slate-700 border border-slate-200 transition"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Qayta urinish
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto">
+              {staff.map((member) => {
+                const isSelected = member.id === selectedUserId;
+                return (
+                  <button
+                    key={member.id}
+                    onClick={() => handleSelectUser(member.id)}
+                    title={member.name}
+                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition truncate ${
+                      isSelected
+                        ? 'bg-teal-600 text-white border-teal-600 shadow-sm'
+                        : 'bg-slate-100 hover:bg-teal-50 hover:text-teal-700 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    {member.name.split(' ')[0]} ({ROLE_LABELS[member.role] || member.role})
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

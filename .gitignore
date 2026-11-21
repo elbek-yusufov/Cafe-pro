@@ -21,3 +21,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.env
+
+# Local database dumps
+backups/
+
+# Yuklangan rasmlar (lokal server)
+apps/local-server/uploads/

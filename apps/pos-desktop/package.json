@@ -11,12 +11,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@oshxona/shared": "workspace:*",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "lucide-react": "^0.475.0",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.0.1",
-    "@oshxona/shared": "workspace:*"
+    "socket.io-client": "^4.8.4",
+    "tailwind-merge": "^3.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.10",

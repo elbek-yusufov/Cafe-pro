@@ -14,7 +14,9 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
+import { ApiError, apiRequest, redirectToLogin } from '../../lib/api';
+import { createRealtimeSocket } from '../../lib/socket';
 
 interface KitchenItem {
   id: string;
@@ -80,20 +82,15 @@ export default function KdsPage() {
   const fetchKitchenOrders = async () => {
     try {
       setLoading(true);
-      // Demo yoki serverdan olish
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-      const res = await fetch('http://localhost:3000/orders/kitchen/tickets', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setOrders(data);
-      } else {
-        // Agar kds uchun demo ma'lumotlar kerak bo'lsa
-        loadFallbackOrders();
-      }
+      const data = await apiRequest<KitchenOrder[]>('/orders/kitchen/tickets');
+      setOrders(data);
     } catch (err) {
-      loadFallbackOrders();
+      if (err instanceof ApiError && err.status === 401) {
+        redirectToLogin();
+        return;
+      }
+      // Namuna buyurtmalar faqat development rejimida — oshxonada soxta buyurtma ko'rsatilmasligi kerak
+      if (process.env.NODE_ENV !== 'production') loadFallbackOrders();
     } finally {
       setLoading(false);
     }
@@ -149,10 +146,7 @@ export default function KdsPage() {
   useEffect(() => {
     fetchKitchenOrders();
 
-    const socket = io('http://localhost:3000', {
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 10,
-    });
+    const socket = createRealtimeSocket();
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -160,6 +154,11 @@ export default function KdsPage() {
     });
 
     socket.on('disconnect', () => {
+      setIsConnected(false);
+    });
+
+    // Server tokenni rad etsa (muddati tugagan / yo'q)
+    socket.on('auth:error', () => {
       setIsConnected(false);
     });
 
@@ -212,14 +211,9 @@ export default function KdsPage() {
     }
 
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-      await fetch(`http://localhost:3000/orders/items/${itemId}/status`, {
+      await apiRequest(`/orders/items/${itemId}/status`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ status: nextStatus }),
+        body: { status: nextStatus },
       });
     } catch (e) {
       // serverga ulanish offline bo'lsa ham UI ishlab turadi
@@ -242,14 +236,9 @@ export default function KdsPage() {
     for (const it of order.items) {
       if (it.status !== 'READY' && it.status !== 'SERVED') {
         try {
-          const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-          await fetch(`http://localhost:3000/orders/items/${it.id}/status`, {
+          await apiRequest(`/orders/items/${it.id}/status`, {
             method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify({ status: 'READY' }),
+            body: { status: 'READY' },
           });
         } catch (e) {}
       }

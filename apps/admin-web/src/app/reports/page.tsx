@@ -1,4 +1,5 @@
 import { Download, Calendar, DollarSign, PieChart, Users, ArrowUpRight } from 'lucide-react';
+import { ExportLink } from '../../components/export-link';
 
 export default function ReportsPage() {
   return (
@@ -18,13 +19,14 @@ export default function ReportsPage() {
             <span>Oxirgi 30 kun</span>
           </div>
 
-          <a
-            href="http://localhost:4000/reports/sales/export?format=xlsx"
+          <ExportLink
+            path="/reports/sales/export?format=xlsx"
+            filename="sales-report.xlsx"
             className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm transition"
           >
             <Download className="w-4 h-4" />
             <span>Excel / CSV Yuklab olish</span>
-          </a>
+          </ExportLink>
         </div>
       </div>
 
@@ -63,12 +65,13 @@ export default function ReportsPage() {
               <DollarSign className="w-4 h-4 text-orange-500" />
               Savdo Dinamikasi (Kunlik / Haftalik)
             </h2>
-            <a
-              href="http://localhost:4000/reports/sales/export?format=xlsx"
+            <ExportLink
+              path="/reports/sales/export?format=xlsx"
+              filename="sales-report.xlsx"
               className="text-xs font-semibold text-orange-600 hover:text-orange-700"
             >
               Eksport (.csv)
-            </a>
+            </ExportLink>
           </div>
           <p className="text-xs text-slate-500">
             Kunlik sotuvlar va cheklar soni bo'yicha batafsil jadval va grafiklar
@@ -103,12 +106,13 @@ export default function ReportsPage() {
               <Users className="w-4 h-4 text-blue-500" />
               Nasiya (Qarzdorlar) Hisoboti
             </h2>
-            <a
-              href="http://localhost:4000/reports/debts/export?format=xlsx"
+            <ExportLink
+              path="/reports/debts/export?format=xlsx"
+              filename="debts-report.xlsx"
               className="text-xs font-semibold text-blue-600 hover:text-blue-700"
             >
               Eksport (.csv)
-            </a>
+            </ExportLink>
           </div>
           <p className="text-xs text-slate-500">
             Hozirda doimiy mijozlardagi mavjud nasiya balansi va to'lovlar
