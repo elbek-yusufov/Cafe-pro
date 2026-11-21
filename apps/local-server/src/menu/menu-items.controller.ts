@@ -63,6 +63,36 @@ export class MenuItemsController {
     });
   }
 
+  @Post('bulk/availability')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Bir nechta taomning mavjudlik holatini birdan o\'zgartirish' })
+  bulkUpdateAvailability(
+    @Body() body: { ids: string[]; isAvailable: boolean },
+    @CurrentUser('deviceId') deviceId?: string,
+  ) {
+    return this.menuItemsService.bulkUpdateAvailability(body.ids, body.isAvailable, deviceId);
+  }
+
+  @Post('bulk/delete')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Bir nechta taomni ommaviy o\'chirish (Soft delete)' })
+  bulkDelete(
+    @Body() body: { ids: string[] },
+    @CurrentUser('deviceId') deviceId?: string,
+  ) {
+    return this.menuItemsService.bulkDelete(body.ids, deviceId);
+  }
+
+  @Post('bulk/category')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Bir nechta taomni boshqa kategoriyaga o\'tkazish' })
+  bulkChangeCategory(
+    @Body() body: { ids: string[]; categoryId: string },
+    @CurrentUser('deviceId') deviceId?: string,
+  ) {
+    return this.menuItemsService.bulkChangeCategory(body.ids, body.categoryId, deviceId);
+  }
+
   @Get(':id')
   @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER)
   @ApiOperation({ summary: 'Bitta taom ma\'lumotlari, variantlari va qo\'shimchalari' })

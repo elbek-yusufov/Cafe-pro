@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { EventsGateway } from '../events/events.gateway';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { UpdatePriceDto } from './dto/update-price.dto';
@@ -9,7 +10,10 @@ import { generateUUIDv7, SyncOperation } from '@oshxona/shared';
 
 @Injectable()
 export class MenuItemsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventsGateway: EventsGateway,
+  ) {}
 
   /**
    * Yangi taom yaratish
@@ -25,7 +29,7 @@ export class MenuItemsService {
 
     const id = generateUUIDv7();
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       const item = await tx.menuItem.create({
         data: {
           id,
@@ -33,13 +37,21 @@ export class MenuItemsService {
           nameRu: dto.nameRu,
           description: dto.description,
           imageUrl: dto.imageUrl,
+          images: dto.images ? (dto.images as any) : undefined,
           price: dto.price,
           costPrice: dto.costPrice || 0,
+          discountPrice: dto.discountPrice,
+          sku: dto.sku,
+          barcode: dto.barcode,
+          stockQty: dto.stockQty ?? 0,
+          minStock: dto.minStock ?? 0,
+          prepTime: dto.prepTime ?? 15,
           unit: dto.unit,
           categoryId: dto.categoryId,
           kitchenStationId: dto.kitchenStationId,
           isAvailable: dto.isAvailable ?? true,
           isFeatured: dto.isFeatured ?? false,
+          isPopular: dto.isPopular ?? false,
           deviceId,
         },
       });
@@ -71,6 +83,11 @@ export class MenuItemsService {
 
       return this.enrichWithProfit(item);
     });
+
+    // Real-vaqtda barcha kassa va KDS terminallariga xabar berish
+    this.eventsGateway.emitMenuUpdated({ action: 'CREATE', item: created });
+
+    return created;
   }
 
   /**
@@ -173,11 +190,12 @@ export class MenuItemsService {
   async update(id: string, dto: UpdateMenuItemDto, deviceId?: string) {
     await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.menuItem.update({
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const item = await tx.menuItem.update({
         where: { id },
         data: {
           ...dto,
+          images: dto.images !== undefined ? (dto.images as any) : undefined,
           version: { increment: 1 },
           deviceId,
         },
@@ -189,13 +207,16 @@ export class MenuItemsService {
           entity: 'menu_item',
           entityId: id,
           operation: SyncOperation.UPDATE,
-          payload: updated as any,
+          payload: item as any,
           deviceId,
         },
       });
 
-      return this.enrichWithProfit(updated);
+      return this.enrichWithProfit(item);
     });
+
+    this.eventsGateway.emitMenuUpdated({ action: 'UPDATE', item: updated });
+    return updated;
   }
 
   /**
@@ -204,7 +225,7 @@ export class MenuItemsService {
   async updatePrice(id: string, dto: UpdatePriceDto, changedBy = 'ADMIN', deviceId?: string) {
     const current = await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       // 1. Narxlar tarixiga yozish
       await tx.priceHistory.create({
         data: {
@@ -219,7 +240,7 @@ export class MenuItemsService {
       });
 
       // 2. Taom narxini yangilash
-      const updated = await tx.menuItem.update({
+      const item = await tx.menuItem.update({
         where: { id },
         data: {
           price: dto.newPrice,
@@ -236,13 +257,16 @@ export class MenuItemsService {
           entity: 'menu_item',
           entityId: id,
           operation: SyncOperation.UPDATE,
-          payload: updated as any,
+          payload: item as any,
           deviceId,
         },
       });
 
-      return this.enrichWithProfit(updated);
+      return this.enrichWithProfit(item);
     });
+
+    this.eventsGateway.emitMenuUpdated({ action: 'PRICE_CHANGE', item: updated });
+    return updated;
   }
 
   /**
@@ -251,8 +275,8 @@ export class MenuItemsService {
   async toggleAvailability(id: string, isAvailable: boolean, deviceId?: string) {
     await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.menuItem.update({
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const item = await tx.menuItem.update({
         where: { id },
         data: {
           isAvailable,
@@ -272,8 +296,11 @@ export class MenuItemsService {
         },
       });
 
-      return updated;
+      return item;
     });
+
+    this.eventsGateway.emitMenuUpdated({ action: 'AVAILABILITY', item: updated });
+    return updated;
   }
 
   /**
@@ -282,8 +309,8 @@ export class MenuItemsService {
   async remove(id: string, deviceId?: string) {
     await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
-      const deleted = await tx.menuItem.update({
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      const item = await tx.menuItem.update({
         where: { id },
         data: {
           deletedAt: new Date(),
@@ -299,13 +326,52 @@ export class MenuItemsService {
           entity: 'menu_item',
           entityId: id,
           operation: SyncOperation.DELETE,
-          payload: { id, deletedAt: deleted.deletedAt },
+          payload: { id, deletedAt: item.deletedAt },
           deviceId,
         },
       });
 
-      return { success: true, message: 'Taom muvaffaqiyatli o\'chirildi' };
+      return item;
     });
+
+    this.eventsGateway.emitMenuUpdated({ action: 'DELETE', item: deleted });
+    return { success: true, message: 'Taom muvaffaqiyatli o\'chirildi' };
+  }
+
+  /**
+   * Ommaviy boshqaruv: mavjudlikni o'zgartirish
+   */
+  async bulkUpdateAvailability(ids: string[], isAvailable: boolean, deviceId?: string) {
+    await this.prisma.menuItem.updateMany({
+      where: { id: { in: ids }, deletedAt: null },
+      data: { isAvailable, version: { increment: 1 }, deviceId },
+    });
+    this.eventsGateway.emitMenuUpdated({ action: 'AVAILABILITY', item: { ids, isAvailable } });
+    return { success: true, count: ids.length };
+  }
+
+  /**
+   * Ommaviy boshqaruv: o'chirish (Soft-delete)
+   */
+  async bulkDelete(ids: string[], deviceId?: string) {
+    await this.prisma.menuItem.updateMany({
+      where: { id: { in: ids } },
+      data: { deletedAt: new Date(), isAvailable: false, version: { increment: 1 }, deviceId },
+    });
+    this.eventsGateway.emitMenuUpdated({ action: 'DELETE', item: { ids } });
+    return { success: true, count: ids.length };
+  }
+
+  /**
+   * Ommaviy boshqaruv: kategoriyani almashtirish
+   */
+  async bulkChangeCategory(ids: string[], categoryId: string, deviceId?: string) {
+    await this.prisma.menuItem.updateMany({
+      where: { id: { in: ids }, deletedAt: null },
+      data: { categoryId, version: { increment: 1 }, deviceId },
+    });
+    this.eventsGateway.emitMenuUpdated({ action: 'UPDATE', item: { ids, categoryId } });
+    return { success: true, count: ids.length };
   }
 
   /**

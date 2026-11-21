@@ -211,13 +211,21 @@ model MenuItem {
   nameRu            String?
   description       String?
   imageUrl          String?
+  images            Json?             // bir nechta rasm URLlari massivi
   price             Int               // sotuv narxi (so'm)
   costPrice         Int               @default(0) // tannarx (so'm)
+  discountPrice     Int?              // chegirma narxi (so'm)
+  sku               String?           // SKU yoki mahsulot kodi
+  barcode           String?           // shtrix-kod
   unit              UnitType          @default(PORTION)
+  stockQty          Decimal?          @default(0) @db.Decimal(12, 3) // ombordagi qoldiq
+  minStock          Decimal?          @default(0) @db.Decimal(12, 3) // minimal ogohlantirish qoldig'i
+  prepTime          Int?              @default(15) // tayyorlanish vaqti (daqiqa)
   categoryId        String
   kitchenStationId  String?           // Issiq sex, Salat sex, Bar va h.k.
   isAvailable       Boolean           @default(true)
   isFeatured        Boolean           @default(false)
+  isPopular         Boolean           @default(false)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   deletedAt         DateTime?

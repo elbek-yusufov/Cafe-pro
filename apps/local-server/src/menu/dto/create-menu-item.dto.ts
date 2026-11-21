@@ -42,6 +42,40 @@ export class CreateMenuItemDto {
   @Min(0)
   costPrice?: number;
 
+  @ApiProperty({ example: 30000, required: false, description: 'Chegirma narxi (so\'m)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  discountPrice?: number;
+
+  @ApiProperty({ example: 'OSH-001', required: false, description: 'SKU / Mahsulot kodi' })
+  @IsOptional()
+  @IsString()
+  sku?: string;
+
+  @ApiProperty({ example: '4780012345678', required: false, description: 'Shtrix-kod' })
+  @IsOptional()
+  @IsString()
+  barcode?: string;
+
+  @ApiProperty({ example: 50, required: false, description: 'Ombordagi qoldiq miqdor' })
+  @IsOptional()
+  stockQty?: number;
+
+  @ApiProperty({ example: 10, required: false, description: 'Minimal qoldiq' })
+  @IsOptional()
+  minStock?: number;
+
+  @ApiProperty({ example: 15, required: false, description: 'Tayyorlanish vaqti (daqiqa)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  prepTime?: number;
+
+  @ApiProperty({ example: ['https://...'], required: false, description: 'Qo\'shimcha rasmlar' })
+  @IsOptional()
+  images?: any;
+
   @ApiProperty({ enum: UnitType, default: UnitType.PORTION, description: 'O\'lchov birligi' })
   @IsEnum(UnitType, { message: 'O\'lchov birligi noto\'g\'ri' })
   unit: UnitType;
@@ -65,4 +99,9 @@ export class CreateMenuItemDto {
   @IsOptional()
   @IsBoolean()
   isFeatured?: boolean;
+
+  @ApiProperty({ example: false, required: false, default: false, description: 'Ommabop / Xaridorgir taom belgisi' })
+  @IsOptional()
+  @IsBoolean()
+  isPopular?: boolean;
 }

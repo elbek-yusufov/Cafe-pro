@@ -126,6 +126,38 @@ export default function App() {
     localStorage.setItem('pos_dishes', JSON.stringify(dishes));
   }, [dishes]);
 
+  // Real-time synchronization of menu and prices from Admin Panel
+  useEffect(() => {
+    const handleMenuSync = (e: any) => {
+      if (e.detail?.dishes) {
+        setDishes(e.detail.dishes);
+        if (e.detail.categories) setCategories(e.detail.categories);
+        showNotification("Menyu va narxlar yangilandi!", 'info');
+      }
+    };
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'pos_dishes' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setDishes(parsed);
+          showNotification("Menyu va narxlar admin tomonidan yangilandi!", 'info');
+        } catch (err) {}
+      }
+      if (e.key === 'pos_categories' && e.newValue) {
+        try {
+          const parsedCats = JSON.parse(e.newValue);
+          setCategories(parsedCats);
+        } catch (err) {}
+      }
+    };
+    window.addEventListener('pos_menu_updated', handleMenuSync);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('pos_menu_updated', handleMenuSync);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
   // Notification helper
   const showNotification = (message: string, type: 'success' | 'info' = 'success') => {
     setNotification({ message, type });

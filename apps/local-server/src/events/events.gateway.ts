@@ -62,6 +62,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server?.emit('stock:low', stock);
   }
 
+  /**
+   * Menyu yangilanganda (taom qo'shildi, narxi o'zgardi, o'chirildi)
+   * POS terminali va KDS ekranini real-vaqtda yangilash uchun
+   */
+  emitMenuUpdated(payload: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'PRICE_CHANGE' | 'AVAILABILITY'; item: any }) {
+    this.server?.emit('menu:updated', payload);
+  }
+
   @SubscribeMessage('ping')
   handlePing(client: Socket) {
     client.emit('pong', { timestamp: new Date().toISOString() });
