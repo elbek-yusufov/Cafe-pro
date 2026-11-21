@@ -5,41 +5,54 @@ import {
   IsString,
   IsInt,
   Min,
+  Max,
+  MaxLength,
+  Matches,
   IsEnum,
   IsBoolean,
 } from 'class-validator';
 import { UnitType } from '@oshxona/db';
 
+/** Faqat lokal serverga yuklangan rasm (POST /uploads/menu-image) yoki bo'sh qiymat (rasmni olib tashlash). */
+export const MENU_IMAGE_URL_PATTERN = /^(\/uploads\/menu\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp))?$/;
+export const MAX_PRICE = 100_000_000;
+
 export class CreateMenuItemDto {
-  @ApiProperty({ example: 'Choyxona palov (Osh)', description: 'Taom nomi (O\'zbekcha)' })
+  @ApiProperty({ example: 'Choyxona palov (Osh)', description: 'Taom nomi' })
+  @MaxLength(120, { message: 'Taom nomi 120 belgidan oshmasligi kerak' })
   @IsString({ message: 'Taom nomi matn bo\'lishi shart' })
   @IsNotEmpty({ message: 'Taom nomi kiritilishi shart' })
   name: string;
 
-  @ApiProperty({ example: 'Чайханский плов', required: false, description: 'Taom nomi (Ruscha)' })
+  @ApiProperty({ required: false, example: 'Чайханский плов' })
   @IsOptional()
   @IsString()
+  @MaxLength(120)
   nameRu?: string;
 
-  @ApiProperty({ example: 'Devzira guruch va mol go\'shti bilan tayyorlangan', required: false })
+  @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   description?: string;
 
-  @ApiProperty({ example: 'https://...', required: false, description: 'Rasm URL' })
+  @ApiProperty({ required: false, example: '/uploads/menu/0193….webp', description: 'POST /uploads/menu-image natijasi' })
   @IsOptional()
   @IsString()
+  @Matches(MENU_IMAGE_URL_PATTERN, { message: 'Rasm faqat /uploads/menu-image orqali yuklanishi kerak' })
   imageUrl?: string;
 
   @ApiProperty({ example: 35000, description: 'Sotuv narxi (so\'m)' })
-  @IsInt({ message: 'Narx butun son bo\'lishi kerak' })
+  @Max(MAX_PRICE, { message: 'Narx juda katta' })
   @Min(0, { message: 'Narx 0 dan kam bo\'lishi mumkin emas' })
+  @IsInt({ message: 'Narx butun son bo\'lishi kerak' })
   price: number;
 
-  @ApiProperty({ example: 20000, required: false, description: 'Tannarx (so\'m)' })
+  @ApiProperty({ required: false, example: 20000, description: 'Tannarx (so\'m)' })
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(MAX_PRICE)
   costPrice?: number;
 
   @ApiProperty({ example: 30000, required: false, description: 'Chegirma narxi (so\'m)' })
@@ -76,26 +89,27 @@ export class CreateMenuItemDto {
   @IsOptional()
   images?: any;
 
-  @ApiProperty({ enum: UnitType, default: UnitType.PORTION, description: 'O\'lchov birligi' })
+  @ApiProperty({ enum: UnitType, example: UnitType.PORTION, default: UnitType.PORTION, description: 'O\'lchov birligi' })
   @IsEnum(UnitType, { message: 'O\'lchov birligi noto\'g\'ri' })
   unit: UnitType;
 
-  @ApiProperty({ description: 'Kategoriya IDsi' })
+  @ApiProperty({ example: '0193…', description: 'Kategoriya IDsi' })
   @IsString()
   @IsNotEmpty({ message: 'Kategoriya tanlanishi shart' })
   categoryId: string;
 
-  @ApiProperty({ example: 'Issiq sex', required: false, description: 'Oshxona bo\'limi / stansiya nomi' })
+  @ApiProperty({ required: false, example: 'Issiq sex' })
   @IsOptional()
   @IsString()
+  @MaxLength(60)
   kitchenStationId?: string;
 
-  @ApiProperty({ example: true, required: false, default: true })
+  @ApiProperty({ required: false, default: true })
   @IsOptional()
   @IsBoolean()
   isAvailable?: boolean;
 
-  @ApiProperty({ example: false, required: false, default: false, description: 'Sevimli taom (Bosh ekranda ko\'rsatish)' })
+  @ApiProperty({ required: false, default: false })
   @IsOptional()
   @IsBoolean()
   isFeatured?: boolean;

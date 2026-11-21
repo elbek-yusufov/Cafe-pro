@@ -40,6 +40,8 @@ export interface SyncPullResponse {
 export interface SyncStatusInfo {
   state: 'ONLINE' | 'SYNCING' | 'OFFLINE';
   isOnline: boolean;
+  cloudConfigured?: boolean;
+  failedCount?: number;
   pendingCount: number;
   lastSyncedAt?: Date | string | null;
   lastPushCount?: number;

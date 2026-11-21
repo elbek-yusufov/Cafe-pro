@@ -1,25 +1,48 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { generateUUIDv7, SyncOperation } from '@oshxona/shared';
+import { Actor, AuditService } from '../audit/audit.service';
+import { EventsGateway } from '../events/events.gateway';
 
 @Injectable()
 export class CategoriesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly events: EventsGateway,
+  ) {}
 
-  async create(dto: CreateCategoryDto, deviceId?: string) {
+  /** Bir xil nomli (o'chirilmagan) kategoriya bo'lmasligi kerak */
+  private async assertNameFree(name: string, exceptId?: string) {
+    const existing = await this.prisma.category.findFirst({
+      where: {
+        deletedAt: null,
+        name: { equals: name.trim(), mode: 'insensitive' },
+        ...(exceptId ? { NOT: { id: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new ConflictException(`"${name.trim()}" nomli kategoriya allaqachon mavjud`);
+    }
+  }
+
+  async create(dto: CreateCategoryDto, actor?: Actor) {
+    await this.assertNameFree(dto.name);
     const id = generateUUIDv7();
+    const deviceId = actor?.deviceId;
 
-    return this.prisma.$transaction(async (tx) => {
-      const category = await tx.category.create({
+    const category = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.category.create({
         data: {
           id,
-          name: dto.name,
+          name: dto.name.trim(),
           nameRu: dto.nameRu,
           color: dto.color || '#EA580C',
           icon: dto.icon,
-          imageUrl: dto.imageUrl,
+          imageUrl: dto.imageUrl || null,
           sortOrder: dto.sortOrder || 0,
           deviceId,
         },
@@ -32,13 +55,17 @@ export class CategoriesService {
           entity: 'category',
           entityId: id,
           operation: SyncOperation.CREATE,
-          payload: category as any,
+          payload: row as any,
           deviceId,
         },
       });
 
-      return category;
+      await this.audit.log(actor, 'CATEGORY_CREATE', { categoryId: id, name: row.name }, tx);
+      return row;
     });
+
+    this.events.emitMenuChanged({ entity: 'category', action: 'created', id });
+    return category;
   }
 
   async findAll(includeInactive = false) {
@@ -47,9 +74,7 @@ export class CategoriesService {
         deletedAt: null,
         ...(includeInactive ? {} : { isActive: true }),
       },
-      orderBy: {
-        sortOrder: 'asc',
-      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       include: {
         _count: {
           select: { menuItems: { where: { deletedAt: null } } },
@@ -82,14 +107,18 @@ export class CategoriesService {
     return category;
   }
 
-  async update(id: string, dto: UpdateCategoryDto, deviceId?: string) {
+  async update(id: string, dto: UpdateCategoryDto, actor?: Actor) {
     await this.findOne(id);
+    if (dto.name !== undefined) await this.assertNameFree(dto.name, id);
+    const deviceId = actor?.deviceId;
 
-    return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.category.update({
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.category.update({
         where: { id },
         data: {
           ...dto,
+          ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+          ...(dto.imageUrl !== undefined ? { imageUrl: dto.imageUrl || null } : {}),
           version: { increment: 1 },
           deviceId,
         },
@@ -101,19 +130,35 @@ export class CategoriesService {
           entity: 'category',
           entityId: id,
           operation: SyncOperation.UPDATE,
-          payload: updated as any,
+          payload: row as any,
           deviceId,
         },
       });
 
-      return updated;
+      await this.audit.log(actor, 'CATEGORY_UPDATE', { categoryId: id, changedFields: Object.keys(dto) }, tx);
+      return row;
     });
+
+    this.events.emitMenuChanged({ entity: 'category', action: 'updated', id });
+    return updated;
   }
 
-  async remove(id: string, deviceId?: string) {
-    await this.findOne(id);
+  /**
+   * Soft-delete. Ichida faol (o'chirilmagan) taomlar bo'lsa — rad etiladi:
+   * avval taomlarni boshqa kategoriyaga o'tkazish yoki o'chirish kerak
+   * (aks holda taomlar POS dan jimgina yo'qolib qolardi).
+   */
+  async remove(id: string, actor?: Actor) {
+    const category = await this.findOne(id);
+    const activeItems = category.menuItems.length;
+    if (activeItems > 0) {
+      throw new ConflictException(
+        `Kategoriyada ${activeItems} ta taom bor. Avval ularni boshqa kategoriyaga o'tkazing yoki o'chiring.`,
+      );
+    }
+    const deviceId = actor?.deviceId;
 
-    return this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       const deleted = await tx.category.update({
         where: { id },
         data: {
@@ -135,7 +180,10 @@ export class CategoriesService {
         },
       });
 
-      return { success: true, message: 'Kategoriya muvaffaqiyatli o\'chirildi' };
+      await this.audit.log(actor, 'CATEGORY_DELETE', { categoryId: id, name: category.name }, tx);
     });
+
+    this.events.emitMenuChanged({ entity: 'category', action: 'deleted', id });
+    return { success: true, message: 'Kategoriya muvaffaqiyatli o\'chirildi' };
   }
 }

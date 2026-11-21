@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { Controller, Post, Get, Body, Query, Headers, UnauthorizedException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { CloudSyncService } from './cloud-sync.service';
@@ -43,8 +44,14 @@ export class CloudSyncController {
   }
 
   private validateApiKey(apiKey?: string) {
-    const validKey = process.env.CLOUD_SYNC_API_KEY || 'sync-secret-auth-key-change-in-prod';
-    if (!apiKey || apiKey !== validKey) {
+    // Fail-closed: kalit o'rnatilmagan (yoki zaif) bo'lsa hech qanday sinxron so'rov qabul qilinmaydi
+    const validKey = process.env.CLOUD_SYNC_API_KEY;
+    if (!validKey || validKey.length < 32) {
+      throw new UnauthorizedException('Bulut serverida CLOUD_SYNC_API_KEY sozlanmagan');
+    }
+    const given = Buffer.from(apiKey || '');
+    const expected = Buffer.from(validKey);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
       throw new UnauthorizedException('Sinxronizatsiya API kaliti noto\'g\'ri');
     }
   }

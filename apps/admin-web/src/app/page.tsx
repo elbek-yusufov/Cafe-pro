@@ -1,149 +1,248 @@
-import {
-  TrendingUp,
-  ShoppingBag,
-  Users,
-  AlertTriangle,
-  CreditCard,
-  Banknote,
-  Smartphone,
-  BookOpen,
-} from 'lucide-react';
+'use client';
 
-export default function DashboardPage() {
-  const kpis = [
-    { title: 'Bugungi Tushum', value: '4 850 000 so\'m', change: '+14% kechagiga nisbatan', icon: TrendingUp, color: 'text-emerald-600 bg-emerald-50' },
-    { title: 'Buyurtmalar Soni', value: '54 ta', change: 'O\'rtacha 90 000 so\'m/chek', icon: ShoppingBag, color: 'text-orange-600 bg-orange-50' },
-    { title: 'Band Stollar', value: '8 / 12', change: '67% zal bandligi', icon: Users, color: 'text-blue-600 bg-blue-50' },
-    { title: 'Ombor Ogohlantirishi', value: '2 ta mahsulot', change: 'Guruch va Sabzi oz qoldi', icon: AlertTriangle, color: 'text-amber-600 bg-amber-50' },
-  ];
+import { useEffect } from 'react';
+import { LayoutDashboard, RefreshCw } from 'lucide-react';
+import Link from 'next/link';
+import { AdminGuard } from '../components/admin-guard';
+import { Banner, Bar, Card, Empty, METHOD_LABELS, PageHeader, STATUS_LABELS, Stat, btn, dt, som, useApi } from '../components/ui';
+import { createRealtimeSocket } from '../lib/socket';
 
-  const topDishes = [
-    { name: 'Choyxona palov (Osh)', category: 'Ikkinchi taomlar', quantity: 38, revenue: '1 330 000 so\'m' },
-    { name: 'Go\'shtli shashlik (kuskovoy)', category: 'Shashliklar', quantity: 32, revenue: '608 000 so\'m' },
-    { name: 'Tandir somsa (go\'shtli)', category: 'Non va pishiriqlar', quantity: 28, revenue: '336 000 so\'m' },
-    { name: 'Ko\'za sho\'rva', category: 'Birinchi taomlar', quantity: 18, revenue: '576 000 so\'m' },
-    { name: 'Achchiq-chuchuk (Shakarob)', category: 'Salatlar', quantity: 24, revenue: '240 000 so\'m' },
-  ];
+export interface Summary {
+  range: { from: string; to: string };
+  revenue: number;
+  ordersCount: number;
+  averageCheck: number;
+  subtotal: number;
+  discounts: number;
+  serviceFees: number;
+  refunds: { count: number; amount: number };
+  cancelledCount: number;
+  payments: { method: string; amount: number; count: number }[];
+  topProducts: { menuItemId: string; name: string; category: string; quantity: number; revenue: number; cost: number }[];
+  byCategory: { categoryId: string; name: string; quantity: number; revenue: number }[];
+  byCashier: { cashierId: string; name: string; orders: number; revenue: number }[];
+  daily: { date: string; revenue: number; orders: number }[];
+  hourly: { hour: number; revenue: number; orders: number }[];
+  cost: number;
+  costCoverage: number;
+  grossProfit: number;
+  expenses: { count: number; amount: number };
+  netAfterExpenses: number;
+  lowStock: { id: string; name: string; currentQty: number; minQty: number; unit: string }[];
+  activeTables: { count: number; openTotal: number };
+  recentOrders: { id: string; orderNumber: string; status: string; type: string; total: number; createdAt: string; table?: { name: string } | null; cashier?: { name: string } | null }[];
+  shifts: { id: string; openedAt: string; closedAt: string | null; startingCash: number; expectedCash: number; actualCash: number; cashDifference: number; totalSales: number; user: { name: string } }[];
+}
+
+function todayQuery() {
+  const f = new Date();
+  f.setHours(0, 0, 0, 0);
+  const t = new Date(f);
+  t.setDate(t.getDate() + 1);
+  return `from=${encodeURIComponent(f.toISOString())}&to=${encodeURIComponent(t.toISOString())}`;
+}
+
+function DashboardView() {
+  const { data: s, error, loading, reload } = useApi<Summary>(`/reports/summary?${todayQuery()}`);
+
+  // Yangi buyurtma / to'lov bo'lganda real-vaqtda yangilash
+  useEffect(() => {
+    const socket = createRealtimeSocket();
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(reload, 500);
+    };
+    socket.on('order:created', schedule);
+    socket.on('order:updated', schedule);
+    socket.on('stock:low', schedule);
+    return () => {
+      if (t) clearTimeout(t);
+      socket.disconnect();
+    };
+  }, [reload]);
+
+  const maxHour = Math.max(0, ...(s?.hourly.map((h) => h.revenue) ?? [0]));
+  const maxProduct = Math.max(0, ...(s?.topProducts.map((p) => p.revenue) ?? [0]));
+  const payTotal = s?.payments.reduce((a, p) => a + p.amount, 0) ?? 0;
 
   return (
-    <div className="p-8 space-y-8">
-      {/* Yuqori qism */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">🍽️ Boshqaruv Paneli (Dashboard)</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            "Rayhon Milliy Taomlar" — Samarqand filiali real-vaqt ko'rsatkichlari
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-500">Sana: 20-Noyabr, 2026</span>
-          <button className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold rounded-lg shadow-sm transition">
-            🔄 Yangilash
+    <div className="p-8 space-y-6">
+      <PageHeader
+        icon={<LayoutDashboard className="w-6 h-6 text-orange-500" />}
+        title="Bosh sahifa"
+        subtitle={`Bugungi ko'rsatkichlar · ${new Date().toLocaleDateString('uz-UZ', { dateStyle: 'long' })}`}
+        actions={
+          <button onClick={reload} className={`${btn.ghost} flex items-center gap-2`}>
+            <RefreshCw className="w-4 h-4" /> Yangilash
           </button>
-        </div>
-      </div>
+        }
+      />
+      {error && <Banner>{error}</Banner>}
+      {loading && !s ? (
+        <Empty>Yuklanmoqda…</Empty>
+      ) : s ? (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <Stat label="Bugungi tushum" value={som(s.revenue)} hint={`${s.ordersCount} ta to'langan buyurtma`} tone="emerald" />
+            <Stat label="O'rtacha chek" value={som(s.averageCheck)} hint={`Chegirmalar: ${som(s.discounts)}`} />
+            <Stat label="Band stollar" value={`${s.activeTables.count} ta`} hint={`Ochiq hisob: ${som(s.activeTables.openTotal)}`} tone="orange" />
+            <Stat
+              label="Ombor ogohlantirishi"
+              value={`${s.lowStock.length} ta`}
+              hint={s.lowStock.slice(0, 2).map((l) => l.name).join(', ') || 'Hammasi yetarli'}
+              tone={s.lowStock.length ? 'amber' : 'slate'}
+            />
+          </div>
 
-      {/* KPI Kartochkalari */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {kpis.map((kpi, idx) => {
-          const Icon = kpi.icon;
-          return (
-            <div
-              key={idx}
-              className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{kpi.title}</span>
-                <div className={`p-2 rounded-xl ${kpi.color}`}>
-                  <Icon className="w-5 h-5" />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <Card title="Soatlar bo'yicha tushum" className="lg:col-span-2">
+              {s.ordersCount === 0 ? (
+                <Empty>Bugun hali to&apos;langan buyurtma yo&apos;q</Empty>
+              ) : (
+                <div className="flex items-end gap-1 h-40" role="img" aria-label="Soatlik tushum diagrammasi">
+                  {s.hourly.map((h) => (
+                    <div key={h.hour} className="flex-1 flex flex-col items-center gap-1 group" title={`${h.hour}:00 — ${som(h.revenue)} (${h.orders} ta)`}>
+                      <div
+                        className="w-full rounded-t bg-orange-500/80 group-hover:bg-orange-600"
+                        style={{ height: `${maxHour ? Math.max(h.revenue ? 4 : 0, (h.revenue / maxHour) * 130) : 0}px` }}
+                      />
+                      <span className="text-[9px] text-slate-400">{h.hour % 3 === 0 ? h.hour : ''}</span>
+                    </div>
+                  ))}
                 </div>
-              </div>
-              <div className="text-2xl font-black text-slate-900">{kpi.value}</div>
-              <p className="text-xs text-slate-500 mt-1.5">{kpi.change}</p>
-            </div>
-          );
-        })}
-      </div>
+              )}
+            </Card>
 
-      {/* To'lov turlari va Savdo Grafigi */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* To'lov turlari taqsimoti */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-          <h2 className="text-base font-bold text-slate-900">💳 To'lov Usullari Taqsimoti</h2>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
-              <div className="flex items-center gap-2.5">
-                <Banknote className="w-4 h-4 text-emerald-600" />
-                <span className="text-sm font-medium text-slate-700">Naqd pul (CASH)</span>
-              </div>
-              <span className="text-sm font-bold text-slate-900">2 850 000 so'm (59%)</span>
-            </div>
-
-            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
-              <div className="flex items-center gap-2.5">
-                <CreditCard className="w-4 h-4 text-blue-600" />
-                <span className="text-sm font-medium text-slate-700">Uzcard / Humo</span>
-              </div>
-              <span className="text-sm font-bold text-slate-900">1 420 000 so'm (29%)</span>
-            </div>
-
-            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
-              <div className="flex items-center gap-2.5">
-                <Smartphone className="w-4 h-4 text-emerald-500" />
-                <span className="text-sm font-medium text-slate-700">Click / Payme</span>
-              </div>
-              <span className="text-sm font-bold text-slate-900">380 000 so'm (8%)</span>
-            </div>
-
-            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
-              <div className="flex items-center gap-2.5">
-                <BookOpen className="w-4 h-4 text-amber-600" />
-                <span className="text-sm font-medium text-slate-700">Nasiya (Qarz)</span>
-              </div>
-              <span className="text-sm font-bold text-slate-900">200 000 so'm (4%)</span>
-            </div>
-          </div>
-        </div>
-
-        {/* TOP-5 Taomlar */}
-        <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-bold text-slate-900">🔥 Eng Ko'p Sotilgan Taomlar (TOP-5)</h2>
-            <a href="/reports" className="text-xs font-semibold text-orange-600 hover:text-orange-700">
-              Barchasini ko'rish →
-            </a>
+            <Card title="To'lov turlari">
+              {s.payments.length === 0 ? (
+                <Empty>To&apos;lovlar yo&apos;q</Empty>
+              ) : (
+                <ul className="space-y-3">
+                  {s.payments.map((p) => (
+                    <li key={p.method} className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="font-semibold text-slate-700">
+                          {METHOD_LABELS[p.method] || p.method} <span className="text-slate-400 font-normal">· {p.count} ta</span>
+                        </span>
+                        <span className="font-mono font-semibold">{som(p.amount)}</span>
+                      </div>
+                      <Bar value={p.amount} max={payTotal} />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
-                <tr>
-                  <th className="py-2.5 px-3 rounded-l-lg">Taom</th>
-                  <th className="py-2.5 px-3">Kategoriya</th>
-                  <th className="py-2.5 px-3">Sotildi</th>
-                  <th className="py-2.5 px-3 rounded-r-lg text-right">Jami Tushum</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {topDishes.map((dish, i) => (
-                  <tr key={i} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3 px-3 font-medium text-slate-900">{dish.name}</td>
-                    <td className="py-3 px-3 text-slate-500 text-xs">{dish.category}</td>
-                    <td className="py-3 px-3">
-                      <span className="inline-block px-2 py-0.5 bg-orange-100 text-orange-800 text-xs font-bold rounded-md">
-                        {dish.quantity} ta
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <Card title="Eng ko'p sotilgan taomlar" className="lg:col-span-2">
+              {s.topProducts.length === 0 ? (
+                <Empty>Ma&apos;lumot yo&apos;q</Empty>
+              ) : (
+                <ul className="space-y-3">
+                  {s.topProducts.slice(0, 7).map((p) => (
+                    <li key={p.menuItemId} className="space-y-1">
+                      <div className="flex justify-between text-sm gap-3">
+                        <span className="font-semibold text-slate-800 truncate">
+                          {p.name} <span className="text-slate-400 font-normal">· {p.quantity} ta</span>
+                        </span>
+                        <span className="font-mono font-semibold shrink-0">{som(p.revenue)}</span>
+                      </div>
+                      <Bar value={p.revenue} max={maxProduct} color="#0d9488" />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+
+            <Card title="Kassirlar">
+              {s.byCashier.length === 0 ? (
+                <Empty>Ma&apos;lumot yo&apos;q</Empty>
+              ) : (
+                <ul className="divide-y divide-slate-100 text-sm">
+                  {s.byCashier.map((c) => (
+                    <li key={c.cashierId} className="py-2 flex justify-between">
+                      <span>
+                        {c.name} <span className="text-slate-400">· {c.orders} ta</span>
                       </span>
-                    </td>
-                    <td className="py-3 px-3 text-right font-bold text-slate-900">{dish.revenue}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <span className="font-mono font-semibold">{som(c.revenue)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {(s.refunds.count > 0 || s.cancelledCount > 0) && (
+                <p className="text-xs text-rose-600 mt-3">
+                  Qaytarilgan: {s.refunds.count} ta ({som(s.refunds.amount)}) · Bekor qilingan: {s.cancelledCount} ta
+                </p>
+              )}
+            </Card>
           </div>
-        </div>
-      </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <Card
+              title="So'nggi buyurtmalar"
+              className="lg:col-span-2"
+              right={
+                <Link href="/sales" className="text-xs font-semibold text-orange-600 hover:underline">
+                  Barchasi →
+                </Link>
+              }
+            >
+              {s.recentOrders.length === 0 ? (
+                <Empty>Bugun buyurtma yo&apos;q</Empty>
+              ) : (
+                <table className="w-full text-sm">
+                  <tbody className="divide-y divide-slate-100">
+                    {s.recentOrders.map((o) => (
+                      <tr key={o.id}>
+                        <td className="py-2 font-mono text-xs text-slate-600">#{o.orderNumber}</td>
+                        <td className="py-2">{o.table?.name || (o.type === 'DINE_IN' ? '—' : 'Olib ketish')}</td>
+                        <td className="py-2 text-slate-500">{o.cashier?.name}</td>
+                        <td className="py-2 text-xs text-slate-500">{dt(o.createdAt)}</td>
+                        <td className="py-2 text-xs">{STATUS_LABELS[o.status] || o.status}</td>
+                        <td className="py-2 text-right font-mono font-semibold">{som(o.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </Card>
+
+            <Card
+              title="Kam qolgan xomashyo"
+              right={
+                <Link href="/stock" className="text-xs font-semibold text-orange-600 hover:underline">
+                  Ombor →
+                </Link>
+              }
+            >
+              {s.lowStock.length === 0 ? (
+                <Empty>Barcha xomashyo yetarli</Empty>
+              ) : (
+                <ul className="divide-y divide-slate-100 text-sm">
+                  {s.lowStock.map((l) => (
+                    <li key={l.id} className="py-2 flex justify-between gap-2">
+                      <span className="text-slate-800">{l.name}</span>
+                      <span className="font-mono text-amber-700">
+                        {l.currentQty} / {l.minQty} {l.unit.toLowerCase()}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+        </>
+      ) : null}
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <AdminGuard>
+      <DashboardView />
+    </AdminGuard>
   );
 }

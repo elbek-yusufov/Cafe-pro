@@ -33,6 +33,24 @@ export class TablesController {
     return this.tablesService.getHallsWithTables(branchId);
   }
 
+  @Post('halls')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Yangi zal (hudud) qo\'shish' })
+  createHall(@Body() body: { name: string; sortOrder?: number }, @CurrentUser('deviceId') deviceId?: string) {
+    return this.tablesService.createHall(String(body?.name ?? ''), Number.isInteger(body?.sortOrder) ? body.sortOrder : undefined, deviceId);
+  }
+
+  @Patch('halls/:id')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Zal nomi / tartibini o\'zgartirish' })
+  updateHall(@Param('id') id: string, @Body() body: { name?: string; sortOrder?: number }, @CurrentUser('deviceId') deviceId?: string) {
+    return this.tablesService.updateHall(
+      id,
+      { name: typeof body?.name === 'string' ? body.name : undefined, sortOrder: Number.isInteger(body?.sortOrder) ? body.sortOrder : undefined },
+      deviceId,
+    );
+  }
+
   @Get(':id')
   @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER)
   @ApiOperation({ summary: 'Stol tafsilotlari' })

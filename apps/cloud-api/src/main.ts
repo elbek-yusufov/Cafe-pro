@@ -10,7 +10,12 @@ async function bootstrap() {
   const logger = new Logger('OshxonaPOS-CloudAPI');
   const app = await NestFactory.create(AppModule);
 
-  app.enableCors({ origin: '*' });
+  // Bulut API server-server (API kalit) orqali ishlaydi. Brauzer originlari faqat aniq ro'yxatdan.
+  const allowedOrigins = (process.env.CLOUD_CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  app.enableCors({ origin: allowedOrigins.length ? allowedOrigins : false });
 
   app.useGlobalPipes(
     new ValidationPipe({

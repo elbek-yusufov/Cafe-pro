@@ -12,9 +12,12 @@ datasource db {
 // --------------------------------------------------------
 
 enum Role {
-  ADMIN
+  OWNER   // egasi — barcha huquqlar
+  ADMIN   // administrator — barcha huquqlar
+  MANAGER // menejer — kassa + tasdiqlash + hisobot/menyu/ombor
   CASHIER
   WAITER
+  KITCHEN // oshxona — faqat KDS
 }
 
 enum DeviceType {
@@ -161,6 +164,7 @@ model User {
   shifts        Shift[]
   auditLogs     AuditLog[]
 
+  @@index([branchId])
   @@map("users")
 }
 
@@ -181,6 +185,7 @@ model Device {
   branch      Branch?     @relation(fields: [branchId], references: [id])
   orders      Order[]
 
+  @@index([branchId])
   @@map("devices")
 }
 
@@ -240,6 +245,7 @@ model MenuItem {
   recipes           Recipe[]
   priceHistories    PriceHistory[]
 
+  @@index([categoryId])
   @@map("menu_items")
 }
 
@@ -259,6 +265,7 @@ model MenuItemVariant {
   menuItem    MenuItem    @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
   orderItems  OrderItem[]
 
+  @@index([menuItemId])
   @@map("menu_item_variants")
 }
 
@@ -279,6 +286,7 @@ model ModifierGroup {
   menuItem    MenuItem    @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
   modifiers   Modifier[]
 
+  @@index([menuItemId])
   @@map("modifier_groups")
 }
 
@@ -297,6 +305,7 @@ model Modifier {
 
   group       ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
+  @@index([groupId])
   @@map("modifiers")
 }
 
@@ -334,6 +343,7 @@ model Recipe {
   menuItem    MenuItem      @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
   items       RecipeItem[]
 
+  @@index([menuItemId])
   @@map("recipes")
 }
 
@@ -352,6 +362,8 @@ model RecipeItem {
   recipe        Recipe      @relation(fields: [recipeId], references: [id], onDelete: Cascade)
   ingredient    Ingredient  @relation(fields: [ingredientId], references: [id])
 
+  @@index([recipeId])
+  @@index([ingredientId])
   @@map("recipe_items")
 }
 
@@ -374,6 +386,8 @@ model StockMovement {
   ingredient    Ingredient        @relation(fields: [ingredientId], references: [id])
   supplier      Supplier?         @relation(fields: [supplierId], references: [id])
 
+  @@index([ingredientId, createdAt])
+  @@index([supplierId])
   @@map("stock_movements")
 }
 
@@ -409,6 +423,7 @@ model Hall {
   branch      Branch?   @relation(fields: [branchId], references: [id])
   tables      Table[]
 
+  @@index([branchId])
   @@map("halls")
 }
 
@@ -430,12 +445,13 @@ model Table {
   hall        Hall        @relation(fields: [hallId], references: [id], onDelete: Cascade)
   orders      Order[]
 
+  @@index([hallId])
   @@map("tables")
 }
 
 model Order {
   id            String        @id
-  orderNumber   String        // masalan K1-0425-0037
+  orderNumber   String        @unique // masalan K1-0425-0037
   type          OrderType     @default(DINE_IN)
   status        OrderStatus   @default(OPEN)
   branchId      String?
@@ -448,6 +464,7 @@ model Order {
   subtotal      Int           @default(0) // taomlar jami
   serviceFee    Int           @default(0) // xizmat haqi
   discount      Int           @default(0) // chegirma summasi
+  discountPercent Int         @default(0) // qo'llangan chegirma foizi (taom qo'shilsa qayta hisoblanadi)
   discountNote  String?
   total         Int           @default(0) // to'lov summasi
   createdAt     DateTime      @default(now())
@@ -465,6 +482,11 @@ model Order {
   payments      Payment[]
   receipts      Receipt[]
 
+  @@index([status, createdAt])
+  @@index([branchId, createdAt])
+  @@index([tableId])
+  @@index([cashierId])
+  @@index([waiterId])
   @@map("orders")
 }
 
@@ -492,6 +514,9 @@ model OrderItem {
   menuItem    MenuItem        @relation(fields: [menuItemId], references: [id])
   variant     MenuItemVariant? @relation(fields: [variantId], references: [id])
 
+  @@index([orderId])
+  @@index([menuItemId])
+  @@index([status])
   @@map("order_items")
 }
 
@@ -514,6 +539,9 @@ model Payment {
   order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   customer      Customer?     @relation(fields: [customerId], references: [id])
 
+  @@index([orderId])
+  @@index([customerId])
+  @@index([createdAt])
   @@map("payments")
 }
 
@@ -534,6 +562,7 @@ model Receipt {
 
   order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
+  @@index([orderId])
   @@map("receipts")
 }
 
@@ -564,6 +593,8 @@ model Shift {
   branch          Branch?         @relation(fields: [branchId], references: [id])
   cashMovements   CashMovement[]
 
+  @@index([userId, closedAt])
+  @@index([branchId, openedAt])
   @@map("shifts")
 }
 
@@ -582,6 +613,7 @@ model CashMovement {
 
   shift       Shift             @relation(fields: [shiftId], references: [id], onDelete: Cascade)
 
+  @@index([shiftId])
   @@map("cash_movements")
 }
 
@@ -617,6 +649,7 @@ model DebtTransaction {
 
   customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
+  @@index([customerId])
   @@map("debt_transactions")
 }
 
@@ -652,6 +685,7 @@ model PriceHistory {
 
   menuItem    MenuItem  @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
 
+  @@index([menuItemId])
   @@map("price_histories")
 }
 
@@ -673,6 +707,7 @@ model Printer {
 
   branch      Branch?     @relation(fields: [branchId], references: [id])
 
+  @@index([branchId])
   @@map("printers")
 }
 
@@ -706,6 +741,8 @@ model AuditLog {
 
   user        User?     @relation(fields: [userId], references: [id])
 
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
   @@map("audit_logs")
 }
 
@@ -725,5 +762,6 @@ model SyncQueue {
   syncedAt    DateTime?
   deviceId    String?
 
+  @@index([status, createdAt])
   @@map("sync_queue")
 }

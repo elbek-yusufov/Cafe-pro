@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from './prisma/prisma.module';
+import { AuditModule } from './audit/audit.module';
+import { UploadsModule } from './uploads/uploads.module';
+import { SettingsModule } from './settings/settings.module';
+import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { MenuModule } from './menu/menu.module';
@@ -19,6 +23,10 @@ import { BackupModule } from './backup/backup.module';
 @Module({
   imports: [
     PrismaModule,
+    AuditModule,
+    UploadsModule,
+    SettingsModule,
+    UsersModule,
     EventsModule,
     TelegramModule,
     BackupModule,

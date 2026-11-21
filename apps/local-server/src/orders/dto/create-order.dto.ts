@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsEnum,
+  IsUUID,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -14,6 +15,11 @@ import { OrderType } from '@oshxona/db';
 import { AddOrderItemDto } from './add-order-item.dto';
 
 export class CreateOrderDto {
+  @ApiProperty({ required: false, description: 'Mijoz (POS) yaratgan barqaror UUID — takroriy yuborishdan himoya (idempotentlik)' })
+  @IsOptional()
+  @IsUUID()
+  id?: string;
+
   @ApiProperty({ enum: OrderType, default: OrderType.DINE_IN })
   @IsEnum(OrderType)
   type: OrderType;

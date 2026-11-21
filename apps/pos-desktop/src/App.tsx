@@ -12,16 +12,7 @@ import {
   SyncState,
   ActiveTab,
 } from './types/pos';
-import {
-  initialCategories,
-  initialDishes,
-  initialTables,
-  initialOrders,
-  initialInventory,
-  initialEmployees,
-  initialDailyReport,
-  defaultSettings,
-} from './data/mockData';
+import { defaultSettings } from './data/mockData';
 import { Header } from './components/Header';
 import { NavigationDrawer } from './components/NavigationDrawer';
 import { ProductGrid } from './components/pos/ProductGrid';
@@ -40,6 +31,25 @@ import { InventoryPage } from './components/pages/InventoryPage';
 import { FinancePage } from './components/pages/FinancePage';
 import { EmployeesPage } from './components/pages/EmployeesPage';
 import { SettingsPage } from './components/pages/SettingsPage';
+import { ApiError, NetworkError, SESSION_EXPIRED_EVENT, apiRequest, clearSession, getAccessToken } from './lib/api';
+import { useServerMenu } from './lib/menu';
+import {
+  ApprovalRequiredError,
+  PaymentResult,
+  ServerOrder,
+  newClientOrderId,
+  payOrder,
+  printReceiptText,
+  submitCart,
+  useServerEmployees,
+  useServerInventory,
+  useServerOrders,
+  useServerReport,
+  useServerSettings,
+  useServerTables,
+} from './lib/pos-data';
+import { SupervisorPinModal } from './components/pos/SupervisorPinModal';
+import { enqueueOffline, flushOutbox, useConnectivity } from './lib/offline-queue';
 
 interface UserSession {
   id: string;
@@ -51,8 +61,18 @@ interface UserSession {
 export default function App() {
   // 1. Auth State
   const [user, setUser] = useState<UserSession | null>(() => {
+    // Sessiya faqat server bergan token bilan birga haqiqiy (eski demo sessiyalar bekor qilinadi)
     const saved = localStorage.getItem('pos_user');
-    return saved ? JSON.parse(saved) : null;
+    if (!saved || !getAccessToken()) {
+      clearSession();
+      return null;
+    }
+    try {
+      return JSON.parse(saved);
+    } catch {
+      clearSession();
+      return null;
+    }
   });
 
   // 2. Navigation State
@@ -61,74 +81,142 @@ export default function App() {
   const [mobilePosTab, setMobilePosTab] = useState<'grid' | 'cart' | 'receipt'>('grid');
 
   // 3. POS Kassa State
-  const [categories, setCategories] = useState<Category[]>(initialCategories);
-  const [dishes, setDishes] = useState<Dish[]>(() => {
-    const saved = localStorage.getItem('pos_dishes');
-    return saved ? JSON.parse(saved) : initialDishes;
-  });
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('fav');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [selectedTable, setSelectedTable] = useState<string>('Stol 1');
+
+  // Menyu (kategoriya + taomlar) — lokal server / PostgreSQL dan, real-time yangilanadi.
+  // Menyu o'zgarganda savatdagi narxlar yangilanadi, sotuvdan olingan taomlar olib tashlanadi.
+  const menu = useServerMenu(!!user, (freshDishes) => {
+    // Callback har renderda yangilanadi, shuning uchun `cart` — joriy savat
+    const byId = new Map(freshDishes.map((d) => [d.id, d]));
+    const removed = cart.filter((item) => !byId.get(item.dishId)?.isAvailable).map((item) => item.name);
+    setCart((prev) =>
+      prev.flatMap((item) => {
+        const dish = byId.get(item.dishId);
+        if (!dish || !dish.isAvailable) return [];
+        return [{ ...item, name: dish.name, price: dish.price }];
+      }),
+    );
+    if (removed.length) {
+      showNotification(`Sotuvda yo'q, savatdan olindi: ${removed.join(', ')}`, 'info');
+    }
+  });
+  const categories: Category[] = menu.categories;
+  const dishes: Dish[] = menu.dishes;
+  // Tanlangan stol — serverdagi stol IDsi
+  const [selectedTableId, setSelectedTableId] = useState<string>('');
   const [orderType, setOrderType] = useState<'DINE_IN' | 'TAKEAWAY'>('DINE_IN');
   const [discountPercent, setDiscountPercent] = useState<number>(0);
 
   // 4. Payment Modal & Order Number
   const [isPaymentOpen, setIsPaymentOpen] = useState<boolean>(false);
   const [activePaymentMethod, setActivePaymentMethod] = useState<'CASH' | 'CARD' | 'QRIS' | 'MIXED'>('CASH');
-  const [currentOrderNumber, setCurrentOrderNumber] = useState<string>(() => `K1-${Math.floor(1000 + Math.random() * 9000)}`);
+  // Joriy (serverga yuborilgan, to'lanmagan) buyurtma va oxirgi chek
+  const [checkoutOrder, setCheckoutOrder] = useState<ServerOrder | null>(null);
+  const [lastReceipt, setLastReceipt] = useState<PaymentResult | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [approvalFor, setApprovalFor] = useState<{ method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED'; message: string } | null>(null);
+  const clientOrderIdRef = React.useRef<string>(newClientOrderId());
+  // Server mavjud bo'lmaganda: to'lov oynasi kassadagi (oldindan) summa bilan, natija oflayn navbatga
+  const [offlineCheckout, setOfflineCheckout] = useState<{ id: string; total: number; cart: CartItem[] } | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
 
   // 5. App Data
-  const [tables, setTables] = useState<TableItem[]>(initialTables);
-  const [orders, setOrders] = useState<OrderRecord[]>(initialOrders);
-  const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
-  const [employees, setEmployees] = useState<Employee[]>(initialEmployees);
-  const [settings, setSettings] = useState<RestaurantSettings>(() => {
-    const saved = localStorage.getItem('pos_settings');
-    return saved ? JSON.parse(saved) : defaultSettings;
+  // Stollar va buyurtmalar — lokal server (PostgreSQL), real-vaqt yangilanadi
+  const serverTables = useServerTables(!!user);
+  const tables: TableItem[] = serverTables.tables;
+  const serverOrders = useServerOrders(!!user);
+  const orders: OrderRecord[] = serverOrders.orders;
+  // Ombor, xodimlar va hisobot — serverdan; rol ruxsat bermasa (403) ogohlantirish ko'rsatiladi
+  const serverInventory = useServerInventory(!!user);
+  const inventory: InventoryItem[] = serverInventory.data ?? [];
+  const serverEmployees = useServerEmployees(!!user && ['OWNER', 'ADMIN'].includes(user?.role ?? ''));
+  const employees: Employee[] = serverEmployees.data ?? [];
+  // Qurilmaga xos sozlamalar (printer, avto-chop) — lokal; restoran/chek/xizmat haqi — serverdan
+  const [localSettings, setSettings] = useState<RestaurantSettings>(() => {
+    try {
+      const saved = localStorage.getItem('pos_settings');
+      return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
+    } catch {
+      return defaultSettings;
+    }
   });
-  const [report, setReport] = useState<DailyReport>(initialDailyReport);
+  const serverSettings = useServerSettings(!!user, localSettings);
+  const settings: RestaurantSettings = useMemo(() => {
+    const r = serverSettings.raw;
+    if (!Object.keys(r).length) return localSettings;
+    return {
+      ...localSettings,
+      name: r.RESTAURANT_NAME || localSettings.name,
+      address: r.RESTAURANT_ADDRESS ?? localSettings.address,
+      phone: r.RESTAURANT_PHONE ?? localSettings.phone,
+      taxNumber: r.RESTAURANT_TIN ?? localSettings.taxNumber,
+      receiptHeader: r.RECEIPT_HEADER_NOTE ?? localSettings.receiptHeader,
+      receiptFooter: r.RECEIPT_FOOTER_NOTE ?? localSettings.receiptFooter,
+      serviceFeePercent: Number(r.SERVICE_FEE_PERCENT ?? 0) || 0,
+      paperWidth: r.RECEIPT_PAPER_WIDTH === '58' ? '58mm' : '80mm',
+    };
+  }, [serverSettings.raw, localSettings]);
+
+  const selectedTable = tables.find((t) => t.id === selectedTableId);
+  const selectedTableName = selectedTable?.name || 'Stol tanlang';
+  // Stollar yuklanganda birinchi bo'sh stolni tanlash
+  useEffect(() => {
+    if (!selectedTableId && tables.length) {
+      setSelectedTableId((tables.find((t) => t.status === 'AVAILABLE') || tables[0]).id);
+    }
+  }, [tables, selectedTableId]);
+  const serverReport = useServerReport(!!user && ['OWNER', 'ADMIN', 'MANAGER'].includes(user?.role ?? ''));
+  const report: DailyReport = serverReport.data ?? {
+    todaySales: 0,
+    orderCount: 0,
+    cashPayments: 0,
+    cardPayments: 0,
+    qrPayments: 0,
+    averageCheck: 0,
+    hourlySales: [],
+  };
 
   // 6. Network & Offline Sync State
-  const [syncState, setSyncState] = useState<SyncState>({
-    isOnline: navigator.onLine,
-    pendingCount: 0,
-    lastSyncTime: '17:15',
-    hasError: false,
+  // 6. Tarmoq holati: kassa LAN orqali LOKAL serverga bog'liq (internet emas) + oflayn navbat
+  const connectivity = useConnectivity(!!user, (r) => {
+    serverTables.reload();
+    serverOrders.reload();
+    if (r.sent) showNotification(`Oflayn saqlangan ${r.sent} ta buyurtma serverga yuborildi`);
+    if (r.failed) showNotification(`${r.failed} ta oflayn buyurtma server tomonidan rad etildi — "Sinxron" tugmasini bosing`, 'info');
   });
+  const outboxPending = connectivity.outbox.filter((e) => e.status === 'pending').length;
+  const outboxFailed = connectivity.outbox.filter((e) => e.status === 'failed');
+  const syncState: SyncState = {
+    isOnline: connectivity.serverReachable,
+    pendingCount: connectivity.outbox.length,
+    lastSyncTime: connectivity.lastCheck
+      ? new Date(connectivity.lastCheck).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' })
+      : '—',
+    hasError: outboxFailed.length > 0 || !connectivity.serverReachable,
+    errorMessage: !connectivity.serverReachable
+      ? 'Lokal server bilan aloqa yo\'q — yangi buyurtmalar qurilmada saqlanadi'
+      : outboxFailed[0]?.error,
+  };
 
-  // Listen to network status
-  useEffect(() => {
-    const handleOnline = () => {
-      setSyncState((prev) => ({
-        ...prev,
-        isOnline: true,
-        lastSyncTime: new Date().toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' }),
-      }));
-      showNotification('Tarmoqqa ulandi. Ma\'lumotlar yangilanmoqda...', 'info');
-    };
-
-    const handleOffline = () => {
-      setSyncState((prev) => ({ ...prev, isOnline: false }));
-      showNotification('Oflayn rejimga o\'tildi. Barcha buyurtmalar qurilma xotirasida saqlanadi.', 'info');
-    };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  // Save dishes to storage safely
+  // Eski versiyadagi lokal (mock) menyu nusxasini tozalash — menyu endi faqat serverdan
   useEffect(() => {
     try {
-      localStorage.setItem('pos_dishes', JSON.stringify(dishes));
-    } catch (e) {
-      console.warn('pos_dishes storage warning', e);
+      localStorage.removeItem('pos_dishes');
+    } catch {
+      /* storage bloklangan */
     }
-  }, [dishes]);
+  }, []);
+
+  // Refresh token ham yaroqsiz bo'lsa — PIN ekraniga qaytish
+  useEffect(() => {
+    const onExpired = () => {
+      setCart([]);
+      setUser(null);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
 
   // Real-time synchronization of menu and prices from Admin Panel
   useEffect(() => {
@@ -185,6 +273,10 @@ export default function App() {
 
   // Add Dish to Cart
   const handleAddDish = (dish: Dish) => {
+    if (!dish.isAvailable) {
+      showNotification(`"${dish.name}" hozir sotuvda yo'q`, 'info');
+      return;
+    }
     setCart((prev) => {
       const existing = prev.find((item) => item.dishId === dish.id);
       if (existing) {
@@ -238,166 +330,355 @@ export default function App() {
     return cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   }, [cart]);
 
-  const serviceFee = useMemo(() => {
-    if (orderType === 'TAKEAWAY') return 0;
-    return Math.round((subtotal * settings.serviceFeePercent) / 100);
-  }, [subtotal, settings.serviceFeePercent, orderType]);
-
+  // Ko'rsatish uchun (serverdagi formula bilan bir xil: avval chegirma, keyin xizmat haqi).
+  // Haqiqiy summa to'lovda SERVERDAN olinadi.
   const discountAmount = useMemo(() => {
     return Math.round((subtotal * discountPercent) / 100);
   }, [subtotal, discountPercent]);
 
+  const serviceFee = useMemo(() => {
+    if (orderType === 'TAKEAWAY') return 0;
+    return Math.round(((subtotal - discountAmount) * settings.serviceFeePercent) / 100);
+  }, [subtotal, discountAmount, settings.serviceFeePercent, orderType]);
+
   const grandTotal = useMemo(() => {
-    return Math.max(0, subtotal + serviceFee - discountAmount);
+    return Math.max(0, subtotal - discountAmount + serviceFee);
   }, [subtotal, serviceFee, discountAmount]);
 
-  // Open Payment with specific method
-  const handleSelectPayment = (method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED') => {
-    if (cart.length === 0) return;
+  const errText = (e: unknown) =>
+    e instanceof NetworkError ? 'Lokal server bilan aloqa yo\'q — buyurtma saqlanmadi' : e instanceof ApiError ? e.message : (e as Error)?.message || 'Kutilmagan xatolik';
+
+  /**
+   * To'lov tugmasi: savat serverga yuboriladi (yangi buyurtma yoki stolning ochiq buyurtmasiga qo'shiladi,
+   * chegirma qo'llanadi, oshxonaga yuboriladi), so'ng SERVER hisoblagan summa bilan to'lov oynasi ochiladi.
+   * Savat bo'sh bo'lsa-yu stolda ochiq buyurtma bo'lsa — o'sha stol hisobi to'lanadi.
+   */
+  const handleSelectPayment = async (method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED', approverPin?: string) => {
+    if (submitting) return;
+    const existingOrderId = orderType === 'DINE_IN' ? selectedTable?.activeOrderId : undefined;
+    if (cart.length === 0 && !existingOrderId) return;
+    if (orderType === 'DINE_IN' && !selectedTable) {
+      showNotification('Avval stolni tanlang', 'info');
+      return;
+    }
     setActivePaymentMethod(method);
-    setIsPaymentOpen(true);
+    setSubmitting(true);
+    try {
+      const order =
+        cart.length === 0 && existingOrderId
+          ? await apiRequest<ServerOrder>(`/orders/${existingOrderId}`)
+          : await submitCart({
+              clientOrderId: clientOrderIdRef.current,
+              cart,
+              orderType,
+              tableId: selectedTable?.id,
+              existingOrderId,
+              discountPercent,
+              approverPin,
+            });
+      // Savatdagi taomlar endi serverda — savat tozalanadi (qayta yuborilmaydi)
+      setCart([]);
+      clientOrderIdRef.current = newClientOrderId();
+      setCheckoutOrder(order);
+      setIsPaymentOpen(true);
+      serverTables.reload();
+      serverOrders.reload();
+    } catch (e) {
+      if (e instanceof ApprovalRequiredError) {
+        setApprovalFor({ method, message: e.message });
+      } else if (e instanceof NetworkError && cart.length > 0) {
+        // Lokal server yo'q — buyurtma qurilmada saqlanadi, server qaytganda avtomatik yuboriladi
+        setOfflineCheckout({ id: clientOrderIdRef.current, total: grandTotal, cart });
+        setIsPaymentOpen(true);
+      } else if (e instanceof ApiError && e.status === 409) {
+        // Stolda boshqa kassadan ochilgan buyurtma bor — yangilab, unga qo'shamiz
+        await serverTables.reload();
+        showNotification(`${e.message}. Qayta bosing — taomlar ochiq buyurtmaga qo'shiladi.`, 'info');
+      } else {
+        showNotification(errText(e), 'info');
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  // Complete Payment
-  const handlePaymentSuccess = (paymentDetails: {
+  const saveOffline = (payment?: { method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED'; received: number }) => {
+    if (!offlineCheckout) return;
+    enqueueOffline({
+      id: offlineCheckout.id,
+      orderType,
+      tableId: orderType === 'DINE_IN' ? selectedTable?.id : undefined,
+      tableName: orderType === 'DINE_IN' ? selectedTable?.name : undefined,
+      cart: offlineCheckout.cart,
+      discountPercent,
+      ...(payment ? { payment: { method: payment.method, received: payment.received, expectedTotal: offlineCheckout.total } } : {}),
+    });
+    setCart([]);
+    setDiscountPercent(0);
+    clientOrderIdRef.current = newClientOrderId();
+    setOfflineCheckout(null);
+    setIsPaymentOpen(false);
+    showNotification('Server bilan aloqa yo\'q: buyurtma kassada saqlandi va aloqa tiklanganda avtomatik yuboriladi', 'info');
+  };
+
+  const handleClosePayment = () => {
+    if (offlineCheckout) {
+      saveOffline();
+      return;
+    }
+    setIsPaymentOpen(false);
+    if (checkoutOrder) {
+      showNotification(`#${checkoutOrder.orderNumber} oshxonaga yuborildi — to'lov keyinroq (stol/buyurtmalar bo'limidan)`, 'info');
+    }
+    setCheckoutOrder(null);
+  };
+
+  // To'lovni serverda saqlash; xato bo'lsa PaymentModal ochiq qoladi va xabar ko'rsatadi
+  const handlePaymentSuccess = async (paymentDetails: {
     method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED';
     receivedAmount: number;
     changeAmount: number;
   }) => {
-    setIsPaymentOpen(false);
-
-    // Create completed order record
-    const newOrder: OrderRecord = {
-      id: `ord-${Date.now()}`,
-      orderNumber: currentOrderNumber,
-      table: orderType === 'DINE_IN' ? selectedTable : 'Olib ketish',
-      type: orderType,
-      status: 'PAID',
-      createdAt: new Date().toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' }),
-      items: cart.map((c) => ({
-        dishId: c.dishId,
-        name: c.name,
-        price: c.price,
-        quantity: c.quantity,
-      })),
-      subtotal,
-      tax: serviceFee,
-      discount: discountAmount,
-      total: grandTotal,
-      paymentMethod: paymentDetails.method,
-      cashierName: user?.name || 'Kassir',
-    };
-
-    setOrders((prev) => [newOrder, ...prev]);
-
-    // Update Daily Stats
-    setReport((prev) => {
-      const newTodaySales = prev.todaySales + grandTotal;
-      const newOrderCount = prev.orderCount + 1;
-      return {
-        ...prev,
-        todaySales: newTodaySales,
-        orderCount: newOrderCount,
-        averageCheck: Math.round(newTodaySales / newOrderCount),
-        cashPayments: paymentDetails.method === 'CASH' ? prev.cashPayments + grandTotal : prev.cashPayments,
-        cardPayments: paymentDetails.method === 'CARD' ? prev.cardPayments + grandTotal : prev.cardPayments,
-        qrPayments: paymentDetails.method === 'QRIS' ? prev.qrPayments + grandTotal : prev.qrPayments,
-      };
-    });
-
-    // Reset Cart & Generate Next Order Number
-    setCart([]);
-    setDiscountPercent(0);
-    setCurrentOrderNumber(`K1-${Math.floor(1000 + Math.random() * 9000)}`);
-
-    showNotification(`To'lov qabul qilindi (${paymentDetails.method}). Chek chiqarildi!`);
+    if (offlineCheckout) {
+      saveOffline({ method: paymentDetails.method, received: paymentDetails.receivedAmount });
+      return;
+    }
+    if (!checkoutOrder) return;
+    try {
+      const result = await payOrder(checkoutOrder.id, paymentDetails.method, checkoutOrder.total, paymentDetails.receivedAmount);
+      setLastReceipt(result);
+      setIsPaymentOpen(false);
+      setCheckoutOrder(null);
+      setDiscountPercent(0);
+      if (settings.autoPrintReceipt) {
+        Promise.resolve(printReceiptText(result.receiptText, result.paperWidth)).then((r) => {
+          if (r && !r.success) showNotification(`Chek chop etilmadi: ${r.error || 'printer xatosi'}`, 'info');
+        });
+      }
+      showNotification(
+        `To'lov qabul qilindi: #${result.orderNumber}${result.change > 0 ? ` · Qaytim ${result.change.toLocaleString('uz-UZ')} so'm` : ''}`,
+      );
+      serverTables.reload();
+      serverOrders.reload();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        const fresh = await apiRequest<ServerOrder>(`/orders/${checkoutOrder.id}`).catch(() => null);
+        if (fresh?.status === 'PAID') {
+          setIsPaymentOpen(false);
+          setCheckoutOrder(null);
+          showNotification(`#${fresh.orderNumber} allaqachon to'langan`, 'info');
+          serverOrders.reload();
+          return;
+        }
+        if (fresh) setCheckoutOrder(fresh); // summa o'zgargan — yangi summa ko'rsatiladi
+      }
+      throw new Error(errText(e));
+    }
   };
 
-  // Print Receipt Button Action
+  // Chek: oxirgi to'lov cheki (serverda yaratilgan matn) yoki savat bo'yicha oldindan hisob
   const handlePrintReceipt = () => {
+    if (lastReceipt && cart.length === 0) {
+      Promise.resolve(printReceiptText(lastReceipt.receiptText, lastReceipt.paperWidth)).then((r) => {
+        if (r && !r.success) showNotification(`Chek chop etilmadi: ${r.error || 'printer xatosi'}`, 'info');
+        else showNotification(`Chek chop etishga yuborildi (#${lastReceipt.orderNumber})`, 'success');
+      });
+      apiRequest(`/receipts/${lastReceipt.receiptId}/reprint`, { method: 'POST' }).catch(() => {});
+      return;
+    }
     if (cart.length === 0) return;
     try {
       window.print();
     } catch {
       // headless or non-browser environment fallback
     }
-    showNotification(`Chek printerga yuborildi (#${currentOrderNumber})`, 'success');
+    showNotification('Oldindan hisob chop etishga yuborildi', 'success');
   };
 
   // Sync Trigger
-  const handleTriggerSync = () => {
-    showNotification('Sinxronizatsiya amalga oshirildi!', 'success');
-    setSyncState((prev) => ({
-      ...prev,
-      pendingCount: 0,
-      lastSyncTime: new Date().toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' }),
-    }));
+  const handleTriggerSync = async () => {
+    const r = await flushOutbox();
+    await apiRequest('/sync/trigger', { method: 'POST' }).catch(() => undefined);
+    await connectivity.check();
+    serverTables.reload();
+    serverOrders.reload();
+    if (!connectivity.serverReachable) showNotification('Lokal server bilan aloqa yo\'q', 'info');
+    else if (outboxFailed.length) showNotification(`Rad etilgan: ${outboxFailed.map((e) => e.error).join('; ')}`, 'info');
+    else showNotification(r.sent ? `${r.sent} ta buyurtma yuborildi` : 'Hammasi sinxron', 'success');
   };
 
   // Status updates
-  const handleUpdateOrderStatus = (orderId: string, status: OrderRecord['status']) => {
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, status } : o))
-    );
-    showNotification('Buyurtma holati yangilandi!');
+  // Buyurtma holati: "Tayyorlanmoqda" = oshxonaga yuborish, "Tayyor" = oshxona taomlarini tayyor deb belgilash
+  const handleUpdateOrderStatus = async (orderId: string, status: OrderRecord['status']) => {
+    try {
+      const order = await apiRequest<ServerOrder>(`/orders/${orderId}`);
+      if (status === 'PREPARING') {
+        await apiRequest(`/orders/${orderId}/send-kitchen`, { method: 'POST' });
+      } else if (status === 'READY') {
+        for (const it of order.items.filter((i) => i.status === 'COOKING')) {
+          await apiRequest(`/orders/items/${it.id}/status`, { method: 'PATCH', body: { status: 'READY' } });
+        }
+      }
+      serverOrders.reload();
+      showNotification('Buyurtma holati yangilandi!');
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
 
-  const handleUpdateTableStatus = (tableId: string, status: TableItem['status']) => {
-    setTables((prev) =>
-      prev.map((t) => (t.id === tableId ? { ...t, status } : t))
-    );
-    showNotification('Stol holati yangilandi!');
+  // To'lanmagan buyurtmani ochish — to'lov oynasi server summasi bilan
+  const handleOpenOrder = async (ord: OrderRecord) => {
+    if (ord.status === 'PAID' || ord.status === 'CANCELLED') {
+      showNotification(`#${ord.orderNumber}: ${ord.status === 'PAID' ? 'to\'langan' : 'bekor qilingan'}`, 'info');
+      return;
+    }
+    try {
+      const order = await apiRequest<ServerOrder>(`/orders/${ord.id}`);
+      setOrderType(order.type === 'DINE_IN' ? 'DINE_IN' : 'TAKEAWAY');
+      if (order.tableId) setSelectedTableId(order.tableId);
+      setCheckoutOrder(order);
+      setActiveTab('kassa');
+      setIsPaymentOpen(true);
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
 
-  const handleAddTable = (newTable: TableItem) => {
-    setTables((prev) => [...prev, newTable]);
-    showNotification(`Yangi "${newTable.name}" muvaffaqiyatli qo'shildi!`);
+  const handleUpdateTableStatus = async (tableId: string, status: TableItem['status']) => {
+    try {
+      await apiRequest(`/tables/${tableId}/status`, { method: 'PATCH', body: { status } });
+      serverTables.reload();
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
 
-  const handleUpdateTable = (updatedTable: TableItem) => {
-    setTables((prev) => prev.map((t) => (t.id === updatedTable.id ? updatedTable : t)));
-    showNotification(`"${updatedTable.name}" ma'lumotlari yangilandi!`);
+  const hallIdByName = (name: string) => serverTables.halls.find((h) => h.name === name)?.id || serverTables.halls[0]?.id;
+
+  // Stol qo'shish/tahrirlash/o'chirish — faqat ADMIN (server tekshiradi)
+  const handleAddTable = async (newTable: TableItem) => {
+    try {
+      await apiRequest('/tables', { method: 'POST', body: { name: newTable.name, capacity: newTable.capacity, hallId: hallIdByName(newTable.hall) } });
+      serverTables.reload();
+      showNotification('Yangi stol muvaffaqiyatli qo\'shildi!');
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
 
-  const handleDeleteTable = (tableId: string) => {
-    setTables((prev) => prev.filter((t) => t.id !== tableId));
-    showNotification('Stol restorandan o\'chirildi!');
+  const handleUpdateTable = async (updatedTable: TableItem) => {
+    try {
+      await apiRequest(`/tables/${updatedTable.id}`, {
+        method: 'PATCH',
+        body: { name: updatedTable.name, capacity: updatedTable.capacity, hallId: hallIdByName(updatedTable.hall) },
+      });
+      serverTables.reload();
+      showNotification('Stol ma\'lumotlari yangilandi!');
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
+  };
+
+  const handleDeleteTable = async (tableId: string) => {
+    try {
+      await apiRequest(`/tables/${tableId}`, { method: 'DELETE' });
+      serverTables.reload();
+      showNotification('Stol o\'chirildi');
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
 
   const handleSelectTableForPos = (tableName: string) => {
-    setSelectedTable(tableName);
+    const t = tables.find((x) => x.name === tableName || x.id === tableName);
+    if (t) setSelectedTableId(t.id);
     setOrderType('DINE_IN');
     setActiveTab('kassa');
   };
 
-  const handleToggleProductAvailability = (dishId: string) => {
-    setDishes((prev) =>
-      prev.map((d) => (d.id === dishId ? { ...d, isAvailable: !d.isAvailable } : d))
-    );
+  const apiErrorText = (e: unknown) =>
+    e instanceof NetworkError ? 'Lokal server bilan aloqa yo\'q' : e instanceof ApiError ? e.message : 'Kutilmagan xatolik';
+
+  // "Tugadi" / "Mavjud" — serverda saqlanadi (ADMIN va CASHIER ruxsati bor)
+  const handleToggleProductAvailability = async (dishId: string) => {
+    const dish = dishes.find((d) => d.id === dishId);
+    if (!dish) return;
+    try {
+      await apiRequest(`/menu-items/${dishId}/availability`, {
+        method: 'PATCH',
+        body: { isAvailable: !dish.isAvailable },
+      });
+      menu.patchDish(dishId, { isAvailable: !dish.isAvailable });
+      showNotification(dish.isAvailable ? `"${dish.name}" sotuvdan olindi` : `"${dish.name}" yana sotuvda`);
+    } catch (e) {
+      showNotification(apiErrorText(e), 'info');
+    }
   };
 
-  const handleAddProduct = (newDish: Dish) => {
-    setDishes((prev) => [newDish, ...prev]);
-    showNotification('Yangi taom muvaffaqiyatli qo\'shildi!');
+  // Taom qo'shish/tahrirlash — faqat ADMIN (server 403 qaytaradi). Natija socket orqali hamma kassaga tarqaladi.
+  const handleAddProduct = async (newDish: Dish) => {
+    try {
+      await apiRequest('/menu-items', {
+        method: 'POST',
+        body: { name: newDish.name, price: newDish.price, categoryId: newDish.categoryId, unit: newDish.unit },
+      });
+      await menu.reload();
+      showNotification('Yangi taom muvaffaqiyatli qo\'shildi!');
+    } catch (e) {
+      showNotification(apiErrorText(e), 'info');
+    }
   };
 
-  const handleUpdateProduct = (updated: Dish) => {
-    setDishes((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
-    showNotification('Taom ma\'lumotlari yangilandi!');
+  const handleUpdateProduct = async (updated: Dish) => {
+    const current = dishes.find((d) => d.id === updated.id);
+    try {
+      if (current && current.price !== updated.price) {
+        await apiRequest(`/menu-items/${updated.id}/price`, {
+          method: 'PATCH',
+          body: { newPrice: updated.price, reason: 'POS kassadan o\'zgartirildi' },
+        });
+      }
+      await apiRequest(`/menu-items/${updated.id}`, {
+        method: 'PATCH',
+        body: { name: updated.name, categoryId: updated.categoryId, unit: updated.unit },
+      });
+      await menu.reload();
+      showNotification('Taom ma\'lumotlari yangilandi!');
+    } catch (e) {
+      showNotification(apiErrorText(e), 'info');
+    }
   };
 
-  const handleAdjustStock = (itemId: string, newAmount: number) => {
-    setInventory((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, currentStock: newAmount } : item))
-    );
-    showNotification('Ombor qoldig\'i yangilandi!');
+  // Inventarizatsiya (haqiqiy qoldiqni kiritish) — server ADMIN/MANAGER ruxsatini tekshiradi
+  const handleAdjustStock = async (itemId: string, newAmount: number) => {
+    try {
+      await apiRequest('/stock/inventory', {
+        method: 'POST',
+        body: { items: [{ ingredientId: itemId, actualQty: newAmount }], reason: 'POS dan inventarizatsiya' },
+      });
+      serverInventory.reload();
+      showNotification('Ombor qoldig\'i yangilandi!');
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
 
-  const handleToggleEmployeeStatus = (empId: string) => {
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === empId ? { ...e, isActive: !e.isActive } : e))
-    );
+  const handleToggleEmployeeStatus = async (empId: string) => {
+    const emp = employees.find((e) => e.id === empId);
+    if (!emp) return;
+    try {
+      await apiRequest(`/users/${empId}`, { method: 'PATCH', body: { isActive: !emp.isActive } });
+      serverEmployees.reload();
+    } catch (e) {
+      showNotification(errText(e), 'info');
+    }
   };
+
+  const restrictedNotice = (text: string) => (
+    <div className="p-6">
+      <div className="max-w-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm font-bold px-4 py-3 rounded-2xl">{text}</div>
+    </div>
+  );
 
   const handleSaveSettings = (newSettings: RestaurantSettings) => {
     setSettings(newSettings);
@@ -422,13 +703,15 @@ export default function App() {
         userName={user.name}
         userRole={user.role}
         onLogout={() => {
-          localStorage.removeItem('pos_user');
+          clearSession();
+          setCart([]);
           setUser(null);
         }}
         onToggleNav={() => setIsNavOpen(true)}
-        selectedTable={selectedTable}
+        selectedTable={selectedTableId}
+        tableOptions={tables.map((t) => ({ id: t.id, name: t.name, occupied: !!t.activeOrderId }))}
         orderType={orderType}
-        onSelectTable={setSelectedTable}
+        onSelectTable={setSelectedTableId}
         onSelectOrderType={setOrderType}
       />
 
@@ -482,6 +765,15 @@ export default function App() {
               </button>
             </div>
 
+            {menu.error && (
+              <div className="mb-2 flex items-center justify-between gap-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold px-3 py-2 rounded-xl">
+                <span>Menyuni serverdan yangilab bo&apos;lmadi: {menu.error}</span>
+                <button onClick={menu.reload} className="px-2.5 py-1 bg-white border border-rose-200 rounded-lg">
+                  Qayta urinish
+                </button>
+              </div>
+            )}
+
             {/* 3-Column Grid on Desktop / Wide Tablet (42% - 33% - 25% matching reference image) */}
             <div className="flex-1 flex gap-3 lg:gap-4 overflow-hidden">
               {/* Left Column: Product Grid (~42%) */}
@@ -516,8 +808,9 @@ export default function App() {
                   onUpdateQuantity={handleUpdateQuantity}
                   onRemoveItem={handleRemoveItem}
                   onClearCart={handleClearCart}
-                  onSelectPayment={handleSelectPayment}
+                  onSelectPayment={(m) => handleSelectPayment(m)}
                   onSetDiscountPercent={setDiscountPercent}
+                  openTableTotal={orderType === 'DINE_IN' ? selectedTable?.totalAmount : undefined}
                 />
               </div>
 
@@ -533,12 +826,13 @@ export default function App() {
                   serviceFee={serviceFee}
                   discountAmount={discountAmount}
                   grandTotal={grandTotal}
-                  orderNumber={currentOrderNumber}
-                  tableName={selectedTable}
+                  orderNumber={checkoutOrder?.orderNumber || (cart.length === 0 && lastReceipt ? lastReceipt.orderNumber : 'Yangi')}
+                  tableName={selectedTableName}
                   orderType={orderType}
                   cashierName={user.name}
                   settings={settings}
                   onPrintReceipt={handlePrintReceipt}
+                  canReprint={!!lastReceipt}
                 />
               </div>
             </div>
@@ -549,9 +843,7 @@ export default function App() {
         {activeTab === 'buyurtmalar' && (
           <OrdersPage
             orders={orders}
-            onOpenOrder={(ord) => {
-              showNotification(`Buyurtma tanlandi: ${ord.orderNumber}`);
-            }}
+            onOpenOrder={handleOpenOrder}
             onUpdateStatus={handleUpdateOrderStatus}
           />
         )}
@@ -581,26 +873,33 @@ export default function App() {
             onToggleAvailability={handleToggleProductAvailability}
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
+            canManageMenu={user.role === 'ADMIN'}
           />
         )}
 
         {/* TAB 6: OMBOR (Inventory) */}
         {activeTab === 'ombor' && (
-          <InventoryPage inventory={inventory} onAdjustStock={handleAdjustStock} />
+          serverInventory.error ? restrictedNotice(`Omborni yuklab bo'lmadi: ${serverInventory.error}`) : (
+            <InventoryPage inventory={inventory} onAdjustStock={handleAdjustStock} />
+          )
         )}
 
         {/* TAB 7: HISOBOTLAR (Dashboard & Analytics) */}
         {activeTab === 'hisobotlar' && (
-          <DashboardPage
-            report={report}
-            recentOrders={orders.slice(0, 5)}
-            onOpenOrder={(ord) => showNotification(`Chek #${ord.orderNumber}`)}
-          />
+          !['OWNER', 'ADMIN', 'MANAGER'].includes(user.role) || serverReport.forbidden ? (
+            restrictedNotice('Hisobotlar faqat menejer va administrator uchun. Admin paneldan ko\'ring.')
+          ) : (
+            <DashboardPage report={report} recentOrders={orders.slice(0, 5)} onOpenOrder={handleOpenOrder} />
+          )
         )}
 
         {/* TAB 8: XODIMLAR (Employees) */}
         {activeTab === 'xodimlar' && (
-          <EmployeesPage employees={employees} onToggleStatus={handleToggleEmployeeStatus} />
+          !['OWNER', 'ADMIN'].includes(user.role) || serverEmployees.forbidden ? (
+            restrictedNotice('Xodimlarni boshqarish faqat administrator uchun (Admin panel → Xodimlar).')
+          ) : (
+            <EmployeesPage employees={employees} onToggleStatus={handleToggleEmployeeStatus} />
+          )
         )}
 
         {/* TAB 9: SOZLAMALAR (Settings) */}
@@ -610,15 +909,47 @@ export default function App() {
       </main>
 
       {/* 3. Payment Modal */}
-      {isPaymentOpen && (
+      {isPaymentOpen && offlineCheckout && (
         <PaymentModal
-          orderTotal={grandTotal}
-          orderNumber={currentOrderNumber}
-          tableName={orderType === 'DINE_IN' ? selectedTable : 'Olib ketish'}
-          onClose={() => setIsPaymentOpen(false)}
+          key={`offline-${offlineCheckout.id}`}
+          orderTotal={offlineCheckout.total}
+          orderNumber="OFLAYN"
+          tableName={orderType === 'DINE_IN' ? selectedTableName : 'Olib ketish'}
+          onClose={handleClosePayment}
           onSuccess={handlePaymentSuccess}
           initialMethod={activePaymentMethod}
         />
+      )}
+
+      {isPaymentOpen && checkoutOrder && (
+        <PaymentModal
+          key={`${checkoutOrder.id}-${checkoutOrder.total}`}
+          orderTotal={checkoutOrder.total}
+          orderNumber={checkoutOrder.orderNumber}
+          tableName={checkoutOrder.table?.name || 'Olib ketish'}
+          onClose={handleClosePayment}
+          onSuccess={handlePaymentSuccess}
+          initialMethod={activePaymentMethod}
+        />
+      )}
+
+      {/* Kassir chegirma limitidan oshganda — admin PIN tasdig'i */}
+      {approvalFor && (
+        <SupervisorPinModal
+          message={approvalFor.message}
+          onCancel={() => setApprovalFor(null)}
+          onSubmit={(pin) => {
+            const method = approvalFor.method;
+            setApprovalFor(null);
+            handleSelectPayment(method, pin);
+          }}
+        />
+      )}
+
+      {submitting && (
+        <div className="fixed inset-0 z-40 bg-white/40 flex items-center justify-center pointer-events-none">
+          <div className="bg-teal-700 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg">Buyurtma serverga yuborilmoqda…</div>
+        </div>
       )}
     </div>
   );

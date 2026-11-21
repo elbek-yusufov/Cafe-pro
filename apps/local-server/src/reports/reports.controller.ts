@@ -14,15 +14,24 @@ import { Role } from '@oshxona/db';
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @Get('summary')
+  @Roles(Role.ADMIN, Role.MANAGER)
+  @ApiOperation({ summary: 'Moliyaviy xulosa: tushum, to\'lovlar, mahsulot/kategoriya/kassir, qaytarish, xarajat, foyda, smenalar' })
+  @ApiQuery({ name: 'from', required: false })
+  @ApiQuery({ name: 'to', required: false })
+  getSummary(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.reportsService.getSummary(from, to);
+  }
+
   @Get('dashboard')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Dashboard uchun bugungi kunlik tezkor hisobot' })
   getDashboard() {
     return this.reportsService.getDashboardSummary();
   }
 
   @Get('sales')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Kunlik/haftalik/oylik savdo hisoboti' })
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
@@ -34,7 +43,7 @@ export class ReportsController {
   }
 
   @Get('top-items')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Eng ko\'p sotilgan TOP taomlar' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   getTopDishes(
@@ -46,7 +55,7 @@ export class ReportsController {
   }
 
   @Get('cashiers')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Kassirlar bo\'yicha savdo va cheklar ko\'rsatkichi' })
   getCashiers(
     @Query('startDate') startDate?: string,
@@ -56,7 +65,7 @@ export class ReportsController {
   }
 
   @Get('profit')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Sof foyda hisoboti (Tushum - Tannarx - Xarajatlar)' })
   getProfit(
     @Query('startDate') startDate?: string,
@@ -66,7 +75,7 @@ export class ReportsController {
   }
 
   @Get('hourly')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Soatlik mijozlar yuklamasi (qaysi soatda eng ko\'p mijoz)' })
   @ApiQuery({ name: 'date', required: false })
   getHourly(@Query('date') date?: string) {
@@ -74,7 +83,7 @@ export class ReportsController {
   }
 
   @Get(':type/export')
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.MANAGER)
   @ApiOperation({ summary: 'Hisobotlarni Excel / CSV formatida yuklab olish' })
   async export(
     @Param('type') type: 'sales' | 'top-items' | 'profit' | 'debts',

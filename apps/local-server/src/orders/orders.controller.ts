@@ -8,6 +8,7 @@ import {
   Delete,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
@@ -22,6 +23,8 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role, OrderStatus, OrderType, OrderItemStatus } from '@oshxona/db';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { ApplyDiscountDto } from './dto/apply-discount.dto';
+import { UpdateItemStatusDto } from './dto/update-item-status.dto';
 
 @ApiTags('Kassa — Buyurtmalar (Orders)')
 @ApiBearerAuth()
@@ -42,21 +45,21 @@ export class OrdersController {
   }
 
   @Get('kitchen/tickets')
-  @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER)
+  @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER, Role.KITCHEN)
   @ApiOperation({ summary: 'KDS oshxona ekrani uchun barcha tayyorlanayotgan faol buyurtmalar' })
   getKitchenTickets() {
     return this.ordersService.getActiveKitchenTickets();
   }
 
   @Patch('items/:itemId/status')
-  @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER)
+  @Roles(Role.ADMIN, Role.CASHIER, Role.WAITER, Role.KITCHEN)
   @ApiOperation({ summary: 'KDS oshxona ekrani: Taom holatini o\'zgartirish (COOKING, READY, SERVED)' })
   updateItemStatus(
     @Param('itemId') itemId: string,
-    @Body('status') status: OrderItemStatus,
+    @Body() dto: UpdateItemStatusDto,
     @CurrentUser('deviceId') deviceId?: string,
   ) {
-    return this.ordersService.updateItemStatus(itemId, status, deviceId);
+    return this.ordersService.updateItemStatus(itemId, dto.status, deviceId);
   }
 
   @Get()
@@ -67,18 +70,41 @@ export class OrdersController {
   @ApiQuery({ name: 'tableId', required: false })
   @ApiQuery({ name: 'isOpenOnly', required: false, type: Boolean })
   findAll(
-    @Query('status') status?: OrderStatus,
-    @Query('type') type?: OrderType,
+    @Query('status') status?: string,
+    @Query('type') type?: string,
     @Query('tableId') tableId?: string,
     @Query('cashierId') cashierId?: string,
     @Query('isOpenOnly') isOpenOnly?: string,
+    @Query('search') search?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('take') take?: string,
+    @Query('skip') skip?: string,
   ) {
+    // Noto'g'ri enum/sana — 400 (Prisma 500 xatosiga tushmasligi uchun)
+    if (status && !(Object.values(OrderStatus) as string[]).includes(status)) {
+      throw new BadRequestException('status noto\'g\'ri');
+    }
+    if (type && !(Object.values(OrderType) as string[]).includes(type)) {
+      throw new BadRequestException('type noto\'g\'ri');
+    }
+    const parseDate = (v?: string) => {
+      if (!v) return undefined;
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) throw new BadRequestException(`Sana noto'g'ri: ${v}`);
+      return d;
+    };
     return this.ordersService.findAll({
-      status,
-      type,
+      status: status as OrderStatus | undefined,
+      type: type as OrderType | undefined,
       tableId,
       cashierId,
       isOpenOnly: isOpenOnly === 'true',
+      search: search?.slice(0, 40),
+      from: parseDate(from),
+      to: parseDate(to),
+      take: take ? Number(take) || undefined : undefined,
+      skip: skip ? Number(skip) || undefined : undefined,
     });
   }
 
@@ -106,9 +132,17 @@ export class OrdersController {
   removeItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: any,
+    @Query('approverPin') approverPin?: string,
   ) {
-    return this.ordersService.removeItem(id, itemId, deviceId);
+    return this.ordersService.removeItem(id, itemId, user, approverPin);
+  }
+
+  @Patch(':id/discount')
+  @Roles(Role.ADMIN, Role.CASHIER)
+  @ApiOperation({ summary: 'Chegirma (foiz). Kassir limitidan oshsa admin PIN kerak' })
+  applyDiscount(@Param('id') id: string, @Body() dto: ApplyDiscountDto, @CurrentUser() user: any) {
+    return this.ordersService.applyDiscount(id, dto, user);
   }
 
   @Post(':id/send-kitchen')
@@ -160,9 +194,8 @@ export class OrdersController {
   cancelOrder(
     @Param('id') id: string,
     @Body() dto: CancelOrderDto,
-    @CurrentUser('id') userId: string,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: any,
   ) {
-    return this.ordersService.cancelOrder(id, dto, userId, deviceId);
+    return this.ordersService.cancelOrder(id, dto, user);
   }
 }

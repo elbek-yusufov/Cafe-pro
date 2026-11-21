@@ -18,6 +18,7 @@ import {
   Info,
 } from 'lucide-react';
 import { formatCurrency } from '@oshxona/shared';
+import { apiRequest } from '../../lib/api';
 
 interface MenuItemVariant {
   id: string;
@@ -71,15 +72,11 @@ function QrMenuContent() {
     async function loadMenu() {
       try {
         setLoading(true);
-        const res = await fetch('http://localhost:3000/guest/menu');
-        if (res.ok) {
-          const data = await res.json();
-          setCategories(data);
-        } else {
-          loadFallbackMenu();
-        }
+        const data = await apiRequest<MenuCategory[]>('/guest/menu', { auth: false });
+        setCategories(data);
       } catch (e) {
-        loadFallbackMenu();
+        // Namuna menyu faqat development rejimida (production'da mijozga soxta narxlar ko'rsatilmaydi)
+        if (process.env.NODE_ENV !== 'production') loadFallbackMenu();
       } finally {
         setLoading(false);
       }
@@ -220,13 +217,13 @@ function QrMenuContent() {
     }, 4500);
 
     try {
-      await fetch('http://localhost:3000/guest/call-service', {
+      await apiRequest('/guest/call-service', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        auth: false,
+        body: {
           tableName: `${tableParam} (${hallParam})`,
           type,
-        }),
+        },
       });
     } catch (e) {
       // Offline fallback

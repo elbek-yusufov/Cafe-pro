@@ -4,7 +4,35 @@ import { generateUUIDv7 } from '@oshxona/shared';
 
 const prisma = new PrismaClient();
 
+/**
+ * Xavfsizlik tekshiruvi: seed barcha jadvallarni tozalaydi (deleteMany).
+ * - Production muhitida hech qachon ishlamaydi.
+ * - Bazada allaqachon ma'lumot bo'lsa, faqat SEED_ALLOW_RESET=true bilan ishlaydi.
+ */
+async function assertSafeToSeed() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Seed production muhitida taqiqlangan (NODE_ENV=production).');
+  }
+
+  const [users, orders, payments, menuItems] = await Promise.all([
+    prisma.user.count(),
+    prisma.order.count(),
+    prisma.payment.count(),
+    prisma.menuItem.count(),
+  ]);
+  const hasData = users + orders + payments + menuItems > 0;
+
+  if (hasData && process.env.SEED_ALLOW_RESET !== 'true') {
+    throw new Error(
+      `Bazada ma'lumot mavjud (users=${users}, orders=${orders}, payments=${payments}, menuItems=${menuItems}). ` +
+        'Seed barcha jadvallarni o\'chiradi. Davom etish uchun avval backup oling va SEED_ALLOW_RESET=true bilan qayta ishga tushiring.',
+    );
+  }
+}
+
 async function main() {
+  await assertSafeToSeed();
+
   console.log('🌱 OshxonaPOS ma\'lumotlar bazasini tozalash va to\'ldirish (Seeding)...');
 
   // Tozalash (teskari tartibda)

@@ -2,6 +2,7 @@ import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@
 import { Reflector } from '@nestjs/core';
 import { Role } from '@oshxona/db';
 import { ROLES_KEY } from '../decorators/roles.decorator';
+import { effectiveRoles } from '../roles';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -22,7 +23,9 @@ export class RolesGuard implements CanActivate {
       throw new ForbiddenException('Ruxsat berilmagan: foydalanuvchi aniqlanmadi');
     }
 
-    const hasRole = requiredRoles.includes(user.role);
+    // Ierarxiya: OWNER ADMIN huquqiga, MANAGER CASHIER huquqiga ega va h.k. (auth/roles.ts)
+    const granted = effectiveRoles(user.role);
+    const hasRole = requiredRoles.some((r) => granted.includes(r as any));
     if (!hasRole) {
       throw new ForbiddenException(
         `Ruxsat yo'q: bu amalni faqat [${requiredRoles.join(', ')}] rollari bajara oladi`,

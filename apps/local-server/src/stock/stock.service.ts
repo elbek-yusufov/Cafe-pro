@@ -341,23 +341,26 @@ export class StockService {
   /**
    * Buyurtma to'langanda avtomatik ombordan chiqim qilish (Retsept bo'yicha)
    */
-  async deductStockForOrder(orderId: string, deviceId?: string) {
-    const order = await this.prisma.order.findUnique({
+  /**
+   * To'lovdan so'ng retsept bo'yicha xomashyoni ombordan chiqarish.
+   *
+   * - Chaqiruvchining tranzaksiyasida (`tx`) ishlaydi: to'lov va ombor harakati birga commit/rollback.
+   * - Qoldiq atomik `decrement` bilan kamaytiriladi (parallel to'lovlarda yo'qolgan yangilanish yo'q).
+   * - STOCK_ALLOW_NEGATIVE=false bo'lsa, yetarli xomashyo bo'lmaganda to'lov rad etiladi.
+   * @returns minimal qoldiqdan tushgan xomashyolar (ogohlantirish commit'dan keyin yuboriladi)
+   */
+  async deductStockForOrder(orderId: string, deviceId: string | undefined, tx: any) {
+    const order = await tx.order.findUnique({
       where: { id: orderId },
       include: {
         items: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, status: { not: 'CANCELLED' } },
           include: {
             menuItem: {
               include: {
                 recipes: {
                   where: { deletedAt: null },
-                  include: {
-                    items: {
-                      where: { deletedAt: null },
-                      include: { ingredient: true },
-                    },
-                  },
+                  include: { items: { where: { deletedAt: null }, include: { ingredient: true } } },
                 },
               },
             },
@@ -365,60 +368,77 @@ export class StockService {
         },
       },
     });
+    if (!order) return [];
 
-    if (!order) return;
+    const allowNegativeSetting = await tx.setting.findUnique({ where: { key: 'STOCK_ALLOW_NEGATIVE' } });
+    const allowNegative = (allowNegativeSetting?.value ?? 'true') !== 'false';
 
+    // Bir xil xomashyoni bitta harakatga yig'ish
+    const totals = new Map<string, { ing: any; qty: number; lines: string[] }>();
     for (const orderItem of order.items) {
-      const recipes = orderItem.menuItem.recipes;
-      if (!recipes || recipes.length === 0) continue;
-
-      const recipe = recipes[0]; // asosiy retsept
-      const orderQty = Number(orderItem.quantity);
-
+      const recipe = orderItem.menuItem.recipes?.[0];
+      if (!recipe) continue;
       for (const rItem of recipe.items) {
-        const ing = rItem.ingredient;
-        const deductQty = Number(rItem.quantity) * orderQty;
-        const currentQty = Number(ing.currentQty);
-        const newQty = Math.max(0, currentQty - deductQty);
-
-        await this.prisma.$transaction(async (tx) => {
-          await tx.ingredient.update({
-            where: { id: ing.id },
-            data: { currentQty: newQty, deviceId },
-          });
-
-          await tx.stockMovement.create({
-            data: {
-              id: generateUUIDv7(),
-              ingredientId: ing.id,
-              type: StockMovementType.OUT_SALE,
-              quantity: deductQty,
-              unitCost: ing.avgCost,
-              totalCost: Math.round(deductQty * ing.avgCost),
-              reason: `Sotuv: #${order.orderNumber} (${orderItem.name})`,
-              deviceId,
-            },
-          });
-        });
-
-        // Agar minimal qoldiqdan kam qolsa, ogohlantirish
-        if (newQty <= Number(ing.minQty)) {
-          this.eventsGateway.emitStockLow({
-            ingredientId: ing.id,
-            name: ing.name,
-            currentQty: newQty,
-            minQty: Number(ing.minQty),
-            unit: ing.unit,
-          });
-
-          this.telegramService.sendLowStockAlert({
-            name: ing.name,
-            currentStock: newQty,
-            minStock: Number(ing.minQty),
-            unit: ing.unit,
-          }).catch(() => {});
-        }
+        const qty = Number(rItem.quantity) * Number(orderItem.quantity);
+        const cur = totals.get(rItem.ingredientId) ?? { ing: rItem.ingredient, qty: 0, lines: [] };
+        cur.qty += qty;
+        cur.lines.push(orderItem.name);
+        totals.set(rItem.ingredientId, cur);
       }
+    }
+
+    const low: { ingredientId: string; name: string; currentQty: number; minQty: number; unit: string }[] = [];
+    for (const [ingredientId, { ing, qty, lines }] of totals) {
+      const deductQty = Math.round(qty * 1000) / 1000;
+      if (!allowNegative) {
+        const moved = await tx.ingredient.updateMany({
+          where: { id: ingredientId, currentQty: { gte: deductQty } },
+          data: { currentQty: { decrement: deductQty }, version: { increment: 1 }, deviceId },
+        });
+        if (moved.count === 0) {
+          throw new BadRequestException(`Omborda "${ing.name}" yetarli emas (kerak: ${deductQty} ${ing.unit})`);
+        }
+      } else {
+        await tx.ingredient.update({
+          where: { id: ingredientId },
+          data: { currentQty: { decrement: deductQty }, version: { increment: 1 }, deviceId },
+        });
+      }
+
+      await tx.stockMovement.create({
+        data: {
+          id: generateUUIDv7(),
+          ingredientId,
+          type: StockMovementType.OUT_SALE,
+          quantity: deductQty,
+          unitCost: ing.avgCost,
+          totalCost: Math.round(deductQty * ing.avgCost),
+          reason: `Sotuv: #${order.orderNumber} (${[...new Set(lines)].join(', ')})`,
+          deviceId,
+        },
+      });
+
+      const after = await tx.ingredient.findUnique({ where: { id: ingredientId } });
+      if (after && Number(after.currentQty) <= Number(after.minQty)) {
+        low.push({
+          ingredientId,
+          name: after.name,
+          currentQty: Number(after.currentQty),
+          minQty: Number(after.minQty),
+          unit: after.unit,
+        });
+      }
+    }
+    return low;
+  }
+
+  /** Commit'dan keyin: kam qolgan xomashyo haqida real-vaqt va Telegram ogohlantirishi */
+  notifyLowStock(low: { ingredientId: string; name: string; currentQty: number; minQty: number; unit: string }[]) {
+    for (const l of low) {
+      this.eventsGateway.emitStockLow(l);
+      this.telegramService
+        .sendLowStockAlert({ name: l.name, currentStock: l.currentQty, minStock: l.minQty, unit: l.unit })
+        .catch(() => {});
     }
   }
 

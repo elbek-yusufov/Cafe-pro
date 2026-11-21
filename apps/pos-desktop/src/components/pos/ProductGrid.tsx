@@ -108,8 +108,19 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
               <div
                 key={dish.id}
                 onClick={() => onAddDish(dish)}
-                className="group relative bg-white rounded-2xl p-2.5 border border-slate-200/80 hover:border-teal-500/80 hover:shadow-md active:scale-95 transition-all cursor-pointer flex flex-col justify-between touch-press"
+                aria-disabled={!dish.isAvailable}
+                className={`group relative bg-white rounded-2xl p-2.5 border border-slate-200/80 transition-all flex flex-col justify-between touch-press ${
+                  dish.isAvailable
+                    ? 'hover:border-teal-500/80 hover:shadow-md active:scale-95 cursor-pointer'
+                    : 'cursor-not-allowed'
+                }`}
               >
+                {/* Sotuvdan olingan (admin yoki kassir "Tugadi" belgilagan) */}
+                {!dish.isAvailable && (
+                  <span className="absolute top-3.5 left-3.5 z-10 bg-rose-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md shadow-xs pointer-events-none">
+                    Tugagan
+                  </span>
+                )}
                 {/* Favorite Star Badge */}
                 {dish.isFavorite && (
                   <span className="absolute top-3.5 right-3.5 z-10 bg-amber-400/95 text-amber-950 text-[10px] font-black px-1.5 py-0.5 rounded-md shadow-xs flex items-center gap-0.5 pointer-events-none">
@@ -118,9 +129,9 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
                 )}
 
                 {/* Professional Food Photography Container */}
-                <div className="w-full aspect-[4/3] rounded-xl overflow-hidden mb-2 bg-slate-100 relative">
+                <div className={`w-full aspect-[4/3] rounded-xl overflow-hidden mb-2 bg-slate-100 relative ${dish.isAvailable ? '' : 'grayscale opacity-50'}`}>
                   <DishImage
-                    type={dish.image || 'somsa'}
+                    type={dish.image ?? ''}
                     imageUrl={dish.imageUrl}
                     alt={dish.name}
                     className="w-full h-full"
@@ -128,7 +139,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
                 </div>
 
                 {/* Details & Price Bar */}
-                <div className="space-y-1">
+                <div className={`space-y-1 ${dish.isAvailable ? '' : 'opacity-50'}`}>
                   <h4 className="text-xs lg:text-[13px] font-bold text-slate-800 leading-tight line-clamp-1 group-hover:text-teal-700 transition-colors">
                     {dish.name}
                   </h4>

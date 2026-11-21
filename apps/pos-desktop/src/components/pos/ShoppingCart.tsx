@@ -16,6 +16,8 @@ interface ShoppingCartProps {
   onClearCart: () => void;
   onSelectPayment: (method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED') => void;
   onSetDiscountPercent: (percent: number) => void;
+  /** Stolda ochiq (to'lanmagan) hisob summasi — savat bo'sh bo'lsa ham to'lash mumkin */
+  openTableTotal?: number;
 }
 
 export const ShoppingCart: React.FC<ShoppingCartProps> = ({
@@ -31,6 +33,7 @@ export const ShoppingCart: React.FC<ShoppingCartProps> = ({
   onClearCart,
   onSelectPayment,
   onSetDiscountPercent,
+  openTableTotal,
 }) => {
   return (
     <div className="flex flex-col h-full gap-3 select-none">
@@ -168,9 +171,14 @@ export const ShoppingCart: React.FC<ShoppingCartProps> = ({
           <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
             To&apos;lov Turlari
           </h3>
-          {cart.length === 0 && (
+          {cart.length === 0 && !openTableTotal && (
             <span className="text-[10px] text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
               Savat bo&apos;sh
+            </span>
+          )}
+          {cart.length === 0 && !!openTableTotal && (
+            <span className="text-[10px] text-teal-800 font-bold bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
+              Stol hisobi: {openTableTotal.toLocaleString('uz-UZ')} so&apos;m
             </span>
           )}
         </div>
@@ -179,7 +187,7 @@ export const ShoppingCart: React.FC<ShoppingCartProps> = ({
           {/* Cash Button */}
           <button
             onClick={() => onSelectPayment('CASH')}
-            disabled={cart.length === 0}
+            disabled={cart.length === 0 && !openTableTotal}
             className="h-20 rounded-2xl bg-teal-600 hover:bg-teal-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white flex flex-col items-center justify-center p-2 transition shadow-sm touch-press"
           >
             <Banknote className="w-6 h-6 mb-1.5" />
@@ -189,7 +197,7 @@ export const ShoppingCart: React.FC<ShoppingCartProps> = ({
           {/* QRIS / QR Payment Button */}
           <button
             onClick={() => onSelectPayment('QRIS')}
-            disabled={cart.length === 0}
+            disabled={cart.length === 0 && !openTableTotal}
             className="h-20 rounded-2xl bg-teal-600 hover:bg-teal-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white flex flex-col items-center justify-center p-2 transition shadow-sm touch-press"
           >
             <QrCode className="w-6 h-6 mb-1.5" />
@@ -199,7 +207,7 @@ export const ShoppingCart: React.FC<ShoppingCartProps> = ({
           {/* Credit Card Button */}
           <button
             onClick={() => onSelectPayment('CARD')}
-            disabled={cart.length === 0}
+            disabled={cart.length === 0 && !openTableTotal}
             className="h-20 rounded-2xl bg-teal-600 hover:bg-teal-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white flex flex-col items-center justify-center p-2 transition shadow-sm touch-press"
           >
             <CreditCard className="w-6 h-6 mb-1.5" />

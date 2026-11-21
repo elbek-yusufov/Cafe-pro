@@ -87,7 +87,7 @@ export class GuestController {
     const actionName = dto.type === 'BILL' ? 'Hisob so\'raldi' : 'Ofitsiant chaqirildi';
 
     // 1. Kassa va ofitsiantlar planshetiga real-vaqt bildirishnoma
-    this.eventsGateway.server?.emit('guest:call-service', {
+    this.eventsGateway.emitGuestCall({
       tableName: dto.tableName,
       type: dto.type,
       notes: dto.notes,

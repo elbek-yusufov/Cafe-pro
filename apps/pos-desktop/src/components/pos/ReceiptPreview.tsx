@@ -15,6 +15,8 @@ interface ReceiptPreviewProps {
   cashierName: string;
   settings: RestaurantSettings;
   onPrintReceipt: () => void;
+  /** Oxirgi to'lov cheki bor — savat bo'sh bo'lsa ham qayta chop etish mumkin */
+  canReprint?: boolean;
 }
 
 export const ReceiptPreview: React.FC<ReceiptPreviewProps> = ({
@@ -29,6 +31,7 @@ export const ReceiptPreview: React.FC<ReceiptPreviewProps> = ({
   cashierName,
   settings,
   onPrintReceipt,
+  canReprint = false,
 }) => {
   const currentDate = new Date().toLocaleDateString('uz-UZ', {
     day: '2-digit',
@@ -137,7 +140,7 @@ export const ReceiptPreview: React.FC<ReceiptPreviewProps> = ({
         {/* Large Teal PRINT RECEIPT Button */}
         <button
           onClick={onPrintReceipt}
-          disabled={cart.length === 0}
+          disabled={cart.length === 0 && !canReprint}
           className="w-full py-3.5 px-4 rounded-2xl bg-teal-600 hover:bg-teal-700 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm transition touch-press"
         >
           <Printer className="w-4 h-4" />

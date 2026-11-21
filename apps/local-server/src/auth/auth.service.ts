@@ -1,51 +1,69 @@
-import { Injectable, UnauthorizedException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
 import { RefreshTokenDto } from './dto/refresh.dto';
+import { LoginThrottleService } from './login-throttle.service';
 import { Role } from '@oshxona/db';
 import { generateUUIDv7, AuthTokens, JwtPayload } from '@oshxona/shared';
+import {
+  getJwtAccessExpiration,
+  getJwtAccessSecret,
+  getJwtRefreshExpiration,
+  getJwtRefreshSecret,
+} from '../config/security.config';
+
+const INVALID_PIN_MESSAGE = 'Xodim yoki PIN kod noto\'g\'ri';
+const INVALID_PASSWORD_MESSAGE = 'Login yoki parol noto\'g\'ri';
+const INACTIVE_MESSAGE = 'Foydalanuvchi hisobi faol emas. Administratorga murojaat qiling.';
+
+/** Taymer hujumlarini kamaytirish uchun: mavjud bo'lmagan foydalanuvchida ham bcrypt bajariladi. */
+const DUMMY_HASH = bcrypt.hashSync('timing-equalizer-not-a-real-credential', 10);
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly throttle: LoginThrottleService,
   ) {}
 
   /**
    * Admin / Boshqaruvchi login + parol orqali kirishi
    */
   async login(dto: LoginDto, ipAddress?: string): Promise<AuthTokens> {
-    const user = await this.prisma.user.findUnique({
-      where: { username: dto.username },
+    const throttleKey = `pwd:${dto.username.toLowerCase()}`;
+    this.throttle.assertNotLocked(throttleKey);
+
+    const user = await this.prisma.user.findFirst({
+      where: { username: dto.username, deletedAt: null },
     });
 
-    if (!user) {
-      throw new UnauthorizedException('Login yoki parol noto\'g\'ri');
+    const isMatch = await bcrypt.compare(dto.password, user?.passwordHash || DUMMY_HASH);
+    if (!user || !user.passwordHash || !isMatch) {
+      const locked = this.throttle.registerFailure(throttleKey);
+      await this.logAudit(user?.id ?? null, 'AUTH_LOGIN_PASSWORD_FAILED', {
+        username: dto.username,
+        reason: !user ? 'unknown_user' : !user.passwordHash ? 'no_password_set' : 'bad_password',
+        locked,
+      }, ipAddress, dto.deviceId);
+      throw new UnauthorizedException(INVALID_PASSWORD_MESSAGE);
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException('Foydalanuvchi hisobi faol emas');
+      throw new UnauthorizedException(INACTIVE_MESSAGE);
     }
 
-    if (!user.passwordHash) {
-      throw new BadRequestException('Ushbu foydalanuvchiga parol o\'rnatilmagan (PIN orqali kiring)');
-    }
+    this.throttle.registerSuccess(throttleKey);
 
-    const isMatch = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!isMatch) {
-      throw new UnauthorizedException('Login yoki parol noto\'g\'ri');
-    }
-
-    // Qurilma oxirgi faolligini yangilash
     if (dto.deviceId) {
       await this.updateDeviceActivity(dto.deviceId);
     }
 
-    // Audit log yozish
     await this.logAudit(user.id, 'AUTH_LOGIN_PASSWORD', {
       username: user.username,
       deviceId: dto.deviceId,
@@ -55,36 +73,41 @@ export class AuthService {
   }
 
   /**
-   * Kassa sensorli ekrani uchun PIN-kod orqali tezkor kirish
+   * Kassa sensorli ekrani uchun: xodim tanlanadi + PIN kod.
+   * PIN bcrypt hash bilan solishtiriladi; PIN hech qachon log/auditga yozilmaydi.
    */
   async pinLogin(dto: PinLoginDto, ipAddress?: string): Promise<AuthTokens> {
     const user = await this.prisma.user.findFirst({
       where: {
-        OR: [
-          { id: dto.userIdentifier },
-          { username: dto.userIdentifier }
-        ]
-      }
+        deletedAt: null,
+        OR: [{ id: dto.userIdentifier }, { username: dto.userIdentifier }],
+      },
     });
 
-    if (!user) {
-      throw new NotFoundException('Tanlangan foydalanuvchi topilmadi');
+    const throttleKey = `pin:${user?.id ?? dto.userIdentifier}`;
+    this.throttle.assertNotLocked(throttleKey);
+
+    const isPinValid = await bcrypt.compare(dto.pin, user?.pinHash || DUMMY_HASH);
+    if (!user || !isPinValid) {
+      const locked = this.throttle.registerFailure(throttleKey);
+      await this.logAudit(user?.id ?? null, 'AUTH_LOGIN_PIN_FAILED', {
+        userIdentifier: dto.userIdentifier,
+        reason: user ? 'bad_pin' : 'unknown_user',
+        locked,
+      }, ipAddress, dto.deviceId);
+      throw new UnauthorizedException(INVALID_PIN_MESSAGE);
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException('Foydalanuvchi hisobi faol emas');
+      throw new UnauthorizedException(INACTIVE_MESSAGE);
     }
 
-    const isPinValid = await bcrypt.compare(dto.pin, user.pinHash);
-    if (!isPinValid) {
-      throw new UnauthorizedException('PIN kod noto\'g\'ri!');
-    }
+    this.throttle.registerSuccess(throttleKey);
 
     if (dto.deviceId) {
       await this.updateDeviceActivity(dto.deviceId);
     }
 
-    // Audit log
     await this.logAudit(user.id, 'AUTH_LOGIN_PIN', {
       username: user.username,
       deviceId: dto.deviceId,
@@ -97,45 +120,71 @@ export class AuthService {
    * Refresh Token orqali yangi Access Token olish
    */
   async refreshTokens(dto: RefreshTokenDto): Promise<AuthTokens> {
+    let payload: JwtPayload;
     try {
-      const payload = this.jwtService.verify<JwtPayload>(dto.refreshToken, {
-        secret: process.env.JWT_REFRESH_SECRET || 'oshxona-pos-refresh-secret-key-32chars-min-change-in-prod',
+      payload = this.jwtService.verify<JwtPayload>(dto.refreshToken, {
+        secret: getJwtRefreshSecret(),
       });
-
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-      });
-
-      if (!user || !user.isActive) {
-        throw new UnauthorizedException('Foydalanuvchi mavjud emas yoki faol emas');
-      }
-
-      return this.generateTokens(user, payload.deviceId);
-    } catch (error) {
+    } catch {
       throw new UnauthorizedException('Yaroqsiz yoki muddati tugagan Refresh token');
     }
+
+    const user = await this.prisma.user.findFirst({
+      where: { id: payload.sub, deletedAt: null },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Foydalanuvchi mavjud emas yoki faol emas');
+    }
+
+    return this.generateTokens(user, payload.deviceId ?? undefined);
   }
 
   /**
-   * Kassa ekranida tez tanlash uchun faol kassirlar va adminlar ro'yxati
+   * Kassa ekranida xodimni tanlash uchun ro'yxat (autentifikatsiyasiz).
+   * Faqat ko'rsatish uchun minimal maydonlar qaytariladi — hash/limitlar yo'q.
    */
   async getActiveStaff() {
     return this.prisma.user.findMany({
       where: {
         isActive: true,
         deletedAt: null,
+        // Oshxona xodimi kassada PIN bilan kirmaydi (KDS — parol bilan)
+        role: { not: 'KITCHEN' as any },
       },
+      // Login (username) qaytarilmaydi — tanlash uchun id + ism + rol yetarli
       select: {
         id: true,
         name: true,
-        username: true,
         role: true,
-        discountLimit: true,
       },
       orderBy: {
         name: 'asc',
       },
     });
+  }
+
+  /**
+   * Production: seed (demo) PIN/parollar bilan faol hisob qolmagan bo'lishi shart.
+   * @returns standart qiymatda qolgan foydalanuvchilar logini (bo'sh — xavfsiz)
+   */
+  async findDefaultCredentialUsers(): Promise<string[]> {
+    const DEFAULT_PINS = ['0000', '1111', '2222', '1234'];
+    const DEFAULT_PASSWORDS = ['admin123', 'password', '12345678'];
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true, deletedAt: null },
+      select: { username: true, pinHash: true, passwordHash: true },
+    });
+    const flagged: string[] = [];
+    for (const u of users) {
+      let weak = false;
+      for (const p of DEFAULT_PINS) if (!weak && (await bcrypt.compare(p, u.pinHash))) weak = true;
+      if (!weak && u.passwordHash) {
+        for (const p of DEFAULT_PASSWORDS) if (!weak && (await bcrypt.compare(p, u.passwordHash))) weak = true;
+      }
+      if (weak) flagged.push(u.username);
+    }
+    return flagged;
   }
 
   /**
@@ -151,19 +200,22 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload, {
-      secret: process.env.JWT_ACCESS_SECRET || 'oshxona-pos-access-secret-key-32chars-min-change-in-prod',
-      expiresIn: (process.env.JWT_ACCESS_EXPIRATION as any) || '15m',
+      secret: getJwtAccessSecret(),
+      expiresIn: getJwtAccessExpiration() as any,
     });
 
     const refreshToken = this.jwtService.sign(payload, {
-      secret: process.env.JWT_REFRESH_SECRET || 'oshxona-pos-refresh-secret-key-32chars-min-change-in-prod',
-      expiresIn: (process.env.JWT_REFRESH_EXPIRATION as any) || '7d',
+      secret: getJwtRefreshSecret(),
+      expiresIn: getJwtRefreshExpiration() as any,
     });
+
+    const decoded = this.jwtService.decode(accessToken) as { exp?: number; iat?: number } | null;
+    const expiresIn = decoded?.exp && decoded?.iat ? decoded.exp - decoded.iat : 15 * 60;
 
     return {
       accessToken,
       refreshToken,
-      expiresIn: 15 * 60, // 15 daqiqa (soniyalarda)
+      expiresIn,
       user: {
         id: user.id,
         name: user.name,
@@ -187,20 +239,27 @@ export class AuthService {
     }
   }
 
-  private async logAudit(userId: string, action: string, details: any, ipAddress?: string, deviceId?: string) {
+  private async logAudit(
+    userId: string | null,
+    action: string,
+    details: Record<string, unknown>,
+    ipAddress?: string,
+    deviceId?: string,
+  ) {
     try {
       await this.prisma.auditLog.create({
         data: {
           id: generateUUIDv7(),
           userId,
           action,
-          details,
-          ipAddress: ipAddress || '127.0.0.1',
+          details: details as any,
+          ipAddress: ipAddress || null,
           deviceId,
         },
       });
     } catch (e) {
-      console.error('Audit log saqlashda xato:', e);
+      // Xato tafsilotini emas, faqat xabarni yozamiz (maxfiy ma'lumot sizib chiqmasligi uchun)
+      this.logger.error(`Audit log saqlashda xato: ${(e as Error).message}`);
     }
   }
 }

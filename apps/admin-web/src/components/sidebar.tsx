@@ -11,6 +11,8 @@ import {
   ChefHat,
   QrCode,
   Armchair,
+  FolderTree,
+  ShieldCheck,
 } from 'lucide-react';
 
 export function Sidebar() {
@@ -20,10 +22,12 @@ export function Sidebar() {
     { name: 'Oshxona KDS Ekran', href: '/kds', icon: ChefHat },
     { name: 'Mijoz QR Menyu', href: '/qr-menu', icon: QrCode },
     { name: 'Menyu va Narxlar', href: '/menu', icon: UtensilsCrossed },
+    { name: 'Kategoriyalar', href: '/categories', icon: FolderTree },
     { name: 'Ombor va Xomashyo', href: '/stock', icon: Package },
     { name: 'Hisobotlar va Tahlil', href: '/reports', icon: BarChart3 },
     { name: 'Sotuvlar & Cheklar', href: '/sales', icon: Receipt },
     { name: 'Xodimlar', href: '/staff', icon: Users },
+    { name: 'Audit jurnali', href: '/audit', icon: ShieldCheck },
     { name: 'Sinxronizatsiya', href: '/sync', icon: RefreshCw },
     { name: 'Sozlamalar', href: '/settings', icon: Settings },
   ];
@@ -58,16 +62,9 @@ export function Sidebar() {
         </nav>
       </div>
 
-      <div className="p-3 bg-slate-800/60 rounded-xl border border-slate-700/50">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-semibold text-slate-400">Sinxron Holati:</span>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-            Online
-          </span>
-        </div>
-        <p className="text-[11px] text-slate-400">So'nggi sinxron: hozirgina</p>
-      </div>
+      <Link href="/sync" className="p-3 bg-slate-800/60 rounded-xl border border-slate-700/50 text-xs text-slate-400 hover:text-white">
+        Server va sinxronizatsiya holati →
+      </Link>
     </aside>
   );
 }

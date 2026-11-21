@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class LoginDto {
   @ApiProperty({ example: 'admin', description: 'Foydalanuvchi logini' })
@@ -14,5 +14,8 @@ export class LoginDto {
   password: string;
 
   @ApiProperty({ example: 'kassa-pos-01', required: false, description: 'Kirilayotgan kassa qurilmasi IDsi' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
   deviceId?: string;
 }
