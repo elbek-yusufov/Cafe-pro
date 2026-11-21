@@ -1,6 +1,6 @@
-# 🍽️ OshxonaPOS — O'zbekiston Restoran va Oshxonalari Uchun Offline-First Kassa & Boshqaruv Tizimi
+# 🍽️ Cafe-pro (OshxonaPOS) — Cafelar va Restoranlar Uchun Offline-First Kassa & Boshqaruv Tizimi
 
-**OshxonaPOS** — O'zbekiston umumiy ovqatlanish korxonalari (choyxonalar, oshxonalar, milliy taomlar markazlari va restoranlar) uchun maxsus ishlab chiqilgan, **100% oflayn rejimda ishlovchi**, xavfsiz va tezkor POS (Point of Sale) ekotizimi.
+**Cafe-pro (OshxonaPOS)** — O'zbekiston umumiy ovqatlanish korxonalari (kafelar, choyxonalar, oshxonalar, milliy taomlar markazlari va restoranlar) uchun maxsus ishlab chiqilgan, **100% oflayn rejimda ishlovchi**, xavfsiz va tezkor POS (Point of Sale) ekotizimi.
 
 Internet butunlay uzilib qolsa ham kassa, oshxona (KDS) va ofitsiantlar lokal tarmoq (LAN) orqali uzluksiz ishlayveradi. Internet paydo bo'lishi bilan barcha cheklar va hisobotlar avtomatik ravishda markaziy bulut (Cloud API) bilan sinxronlanadi.
 
@@ -203,4 +203,4 @@ Natija: **Barcha paketlar 0 ta xatolik bilan muvaffaqiyatli yig'iladi.**
 ---
 
 **Muallif:** OshxonaPOS Jamoasi  
-**Litsenziya:** Xususiy Mulk (Proprietary) — O'zbekiston umumiy ovqatlanish bozori uchun maxsus.
+**Litsenziya:** MIT License (Cafe-pro).

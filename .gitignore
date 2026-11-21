@@ -1,3 +1,4 @@
+# Node & Turborepo
 node_modules/
 dist/
 build/
@@ -13,3 +14,10 @@ coverage/
 .DS_Store
 Thumbs.db
 .idea/
+.vscode/
+
+# Python / Environment (if any)
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
