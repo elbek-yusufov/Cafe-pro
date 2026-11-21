@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { UtensilsCrossed } from 'lucide-react';
 
 interface DishImageProps {
   type?: string;
@@ -49,6 +50,19 @@ export const DishImage: React.FC<DishImageProps> = ({
         />
         {/* Soft atmospheric gradient */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent pointer-events-none" />
+      </div>
+    );
+  }
+
+  // Serverdagi taomda rasm yo'q (yoki yuklanmadi) — neytral belgi, stok foto EMAS
+  if (!type || !FOOD_PHOTOS[type]) {
+    return (
+      <div
+        className={`relative w-full h-full flex items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-slate-50 via-teal-50/70 to-emerald-50 border border-teal-100/70 ${className}`}
+        role="img"
+        aria-label={alt}
+      >
+        <UtensilsCrossed className="w-1/4 h-1/4 max-w-10 max-h-10 min-w-4 min-h-4 text-teal-600/40" strokeWidth={1.5} />
       </div>
     );
   }
