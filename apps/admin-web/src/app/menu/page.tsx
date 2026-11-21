@@ -343,9 +343,25 @@ export default function ProductManagementPage() {
   const saveAndBroadcast = (updatedDishes: MenuItem[], updatedCategories?: CategoryItem[]) => {
     setDishes(updatedDishes);
     if (typeof window !== 'undefined') {
-      localStorage.setItem('pos_dishes', JSON.stringify(updatedDishes));
+      try {
+        localStorage.setItem('pos_dishes', JSON.stringify(updatedDishes));
+      } catch (err) {
+        console.warn('localStorage quota reached, storing lightweight dishes cache', err);
+        try {
+          const lightweight = updatedDishes.map(d => ({
+            ...d,
+            images: d.images?.filter(img => !img.startsWith('data:image')) || [],
+            imageUrl: d.imageUrl?.startsWith('data:image') ? '' : d.imageUrl,
+          }));
+          localStorage.setItem('pos_dishes', JSON.stringify(lightweight));
+        } catch (e) {
+          console.error('Failed to save to localStorage', e);
+        }
+      }
       if (updatedCategories) {
-        localStorage.setItem('pos_categories', JSON.stringify(updatedCategories));
+        try {
+          localStorage.setItem('pos_categories', JSON.stringify(updatedCategories));
+        } catch (e) {}
       }
       // POS Kassa terminali va boshqa oynalarga signal
       window.dispatchEvent(new CustomEvent('pos_menu_updated', {

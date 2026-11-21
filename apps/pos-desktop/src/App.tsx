@@ -121,9 +121,13 @@ export default function App() {
     };
   }, []);
 
-  // Save dishes to storage
+  // Save dishes to storage safely
   useEffect(() => {
-    localStorage.setItem('pos_dishes', JSON.stringify(dishes));
+    try {
+      localStorage.setItem('pos_dishes', JSON.stringify(dishes));
+    } catch (e) {
+      console.warn('pos_dishes storage warning', e);
+    }
   }, [dishes]);
 
   // Real-time synchronization of menu and prices from Admin Panel
