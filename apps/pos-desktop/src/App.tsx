@@ -139,6 +139,12 @@ export default function App() {
         showNotification("Menyu va narxlar yangilandi!", 'info');
       }
     };
+    const handleSettingsSync = (e: any) => {
+      if (e.detail) {
+        setSettings(e.detail);
+        showNotification("Restoran va chek sozlamalari yangilandi!", 'info');
+      }
+    };
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'pos_dishes' && e.newValue) {
         try {
@@ -153,11 +159,20 @@ export default function App() {
           setCategories(parsedCats);
         } catch (err) {}
       }
+      if (e.key === 'pos_settings' && e.newValue) {
+        try {
+          const parsedSettings = JSON.parse(e.newValue);
+          setSettings(parsedSettings);
+          showNotification("Restoran sozlamalari yangilandi!", 'info');
+        } catch (err) {}
+      }
     };
     window.addEventListener('pos_menu_updated', handleMenuSync);
+    window.addEventListener('pos_settings_updated', handleSettingsSync);
     window.addEventListener('storage', handleStorage);
     return () => {
       window.removeEventListener('pos_menu_updated', handleMenuSync);
+      window.removeEventListener('pos_settings_updated', handleSettingsSync);
       window.removeEventListener('storage', handleStorage);
     };
   }, []);
