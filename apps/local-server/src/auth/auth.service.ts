@@ -149,6 +149,8 @@ export class AuthService {
       where: {
         isActive: true,
         deletedAt: null,
+        // Oshxona xodimi kassada PIN bilan kirmaydi (KDS — parol bilan)
+        role: { not: 'KITCHEN' as any },
       },
       // Login (username) qaytarilmaydi — tanlash uchun id + ism + rol yetarli
       select: {
@@ -160,6 +162,29 @@ export class AuthService {
         name: 'asc',
       },
     });
+  }
+
+  /**
+   * Production: seed (demo) PIN/parollar bilan faol hisob qolmagan bo'lishi shart.
+   * @returns standart qiymatda qolgan foydalanuvchilar logini (bo'sh — xavfsiz)
+   */
+  async findDefaultCredentialUsers(): Promise<string[]> {
+    const DEFAULT_PINS = ['0000', '1111', '2222', '1234'];
+    const DEFAULT_PASSWORDS = ['admin123', 'password', '12345678'];
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true, deletedAt: null },
+      select: { username: true, pinHash: true, passwordHash: true },
+    });
+    const flagged: string[] = [];
+    for (const u of users) {
+      let weak = false;
+      for (const p of DEFAULT_PINS) if (!weak && (await bcrypt.compare(p, u.pinHash))) weak = true;
+      if (!weak && u.passwordHash) {
+        for (const p of DEFAULT_PASSWORDS) if (!weak && (await bcrypt.compare(p, u.passwordHash))) weak = true;
+      }
+      if (weak) flagged.push(u.username);
+    }
+    return flagged;
   }
 
   /**

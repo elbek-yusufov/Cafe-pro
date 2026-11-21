@@ -1,13 +1,13 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, Length, Matches } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Length, Matches } from 'class-validator';
 
 export class RefundPaymentDto {
   @ApiProperty({ example: '0000', description: 'Admin PIN kodi' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Admin PIN kiritilishi shart' })
   @Length(4, 6)
   @Matches(/^[0-9]+$/, { message: 'PIN faqat raqamlardan iborat bo\'lishi kerak' })
-  adminPin: string;
+  adminPin?: string;
 
   @ApiProperty({ example: 'Mijoz noto\'g\'ri taom berilgani sababli rad etdi', description: 'Qaytarish sababi' })
   @IsString()

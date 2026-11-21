@@ -12,3 +12,18 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/** Electron preload orqali berilgan API (brauzerda — undefined) */
+interface PosDesktopApi {
+  isElectron: true;
+  config: { apiUrl: string; deviceId: string; printerName: string };
+  setApiUrl: (apiUrl: string) => Promise<{ ok: boolean; error?: string }>;
+  secureGet: () => string | null;
+  secureSet: (value: string | null) => boolean;
+  getPrinters: () => Promise<{ name: string; isDefault: boolean }[]>;
+  printReceipt: (text: string, paperWidth?: number, deviceName?: string) => Promise<{ success: boolean; error?: string }>;
+}
+
+interface Window {
+  posApi?: PosDesktopApi;
+}

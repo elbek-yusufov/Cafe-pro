@@ -9,6 +9,7 @@ import {
   getApiBaseUrl,
   getDeviceId,
   saveSession,
+  setApiBaseUrlOverride,
 } from '../lib/api';
 
 interface PinLoginProps {
@@ -39,6 +40,7 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onSuccess }) => {
   const [staffLoading, setStaffLoading] = useState<boolean>(true);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [serverUrl, setServerUrl] = useState<string>(() => getApiBaseUrl());
 
   const selectedUser = staff.find((s) => s.id === selectedUserId) || null;
 
@@ -223,6 +225,31 @@ export const PinLogin: React.FC<PinLoginProps> = ({ onSuccess }) => {
               >
                 <RefreshCw className="w-3.5 h-3.5" /> Qayta urinish
               </button>
+              {/* Lokal server manzili (masalan server kompyuterning LAN IPsi) */}
+              <form
+                className="flex gap-1.5 w-full mt-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const v = serverUrl.trim();
+                  if (!/^https?:\/\/[^\s/]+(:\d+)?\/?$/.test(v)) {
+                    setStaffError('Manzil http://192.168.1.10:4000 ko\'rinishida bo\'lishi kerak');
+                    return;
+                  }
+                  setApiBaseUrlOverride(v);
+                  loadStaff();
+                }}
+              >
+                <input
+                  value={serverUrl}
+                  onChange={(e) => setServerUrl(e.target.value)}
+                  placeholder="http://192.168.1.10:4000"
+                  aria-label="Lokal server manzili"
+                  className="flex-1 min-w-0 px-2 py-1.5 border border-slate-200 rounded-xl text-[11px] font-mono"
+                />
+                <button type="submit" className="px-2.5 py-1.5 bg-teal-600 text-white rounded-xl text-[11px] font-bold">
+                  Saqlash
+                </button>
+              </form>
             </div>
           ) : (
             <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto">

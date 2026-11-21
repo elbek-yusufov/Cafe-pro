@@ -46,6 +46,9 @@ export class SyncService {
     return {
       state,
       isOnline: this.isOnline,
+      // Bulut manzili va kaliti .env da sozlanganmi (sozlanmagan bo'lsa — faqat lokal/LAN rejim)
+      cloudConfigured: !!(process.env.CLOUD_API_URL && process.env.CLOUD_SYNC_API_KEY),
+      failedCount: await this.prisma.syncQueue.count({ where: { status: SyncStatus.FAILED } }),
       pendingCount,
       lastSyncedAt: this.lastSyncedAt,
       lastError: this.lastError,

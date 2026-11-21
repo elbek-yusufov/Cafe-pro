@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Category, Dish } from '../types/pos';
-import { apiRequest, getApiBaseUrl, refreshSession } from './api';
-import { createRealtimeSocket } from './socket';
+import { apiRequest, getApiBaseUrl } from './api';
+import { acquireRealtimeSocket, releaseRealtimeSocket } from './socket';
 
 /**
  * POS menyusi — lokal server (PostgreSQL) dan olinadi. Mock ma'lumot ishlatilmaydi.
@@ -121,7 +121,7 @@ export function useServerMenu(enabled: boolean, onMenuChanged?: (dishes: Dish[])
     setLoading(true);
     reload();
 
-    const socket = createRealtimeSocket();
+    const socket = acquireRealtimeSocket();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
       if (timer) clearTimeout(timer);
@@ -130,17 +130,11 @@ export function useServerMenu(enabled: boolean, onMenuChanged?: (dishes: Dish[])
     socket.on('menu:updated', schedule);
     // Aloqa tiklanganda o'tkazib yuborilgan o'zgarishlarni olish
     socket.io.on('reconnect', schedule);
-    // Token muddati tugadi — yangilab qayta ulanish (yangilab bo'lmasa App PIN ekraniga qaytaradi)
-    socket.on('auth:error', async () => {
-      if (await refreshSession()) {
-        socket.connect();
-        schedule();
-      }
-    });
-
     return () => {
       if (timer) clearTimeout(timer);
-      socket.disconnect();
+      socket.off('menu:updated', schedule);
+      socket.io.off('reconnect', schedule);
+      releaseRealtimeSocket();
     };
   }, [enabled, reload]);
 

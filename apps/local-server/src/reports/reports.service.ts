@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentMethod, TableStatus } from '@oshxona/db';
 
@@ -334,5 +334,144 @@ export class ReportsService {
         data: '\uFEFF' + csvHeader + rows,
       };
     }
+  }
+
+  /**
+   * Yagona moliyaviy xulosa (Admin dashboard va hisobotlar uchun).
+   *
+   * Ta'riflar (barcha summalar so'mda, server hisobi):
+   *  - Tushum (revenue)  = davrda YARATILGAN va holati PAID bo'lgan buyurtmalar `total` yig'indisi.
+   *  - Qaytarilgan (refunds) = davrdagi REFUNDED buyurtmalar (tushumga kirmaydi).
+   *  - Chegirma / xizmat haqi = PAID buyurtmalardagi qiymatlar yig'indisi.
+   *  - To'lov turlari = PAID buyurtmalarga bog'liq to'lovlar (amount), naqd uchun qaytim hisobga olinmaydi.
+   *  - Tannarx = sotuv paytidagi muzlatilgan orderItem.costPrice × miqdor. `costCoverage` — tannarxi
+   *    kiritilgan taomlar ulushi (100% bo'lmasa foyda taxminiy).
+   *  - Xarajatlar = kassa smenalaridagi EXPENSE harakatlari.
+   */
+  async getSummary(fromStr?: string, toStr?: string) {
+    const to = toStr ? new Date(toStr) : new Date();
+    const from = fromStr ? new Date(fromStr) : new Date(new Date(to).setHours(0, 0, 0, 0));
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) {
+      throw new BadRequestException('Sana oralig\'i noto\'g\'ri');
+    }
+    if (to.getTime() - from.getTime() > 400 * 24 * 3600 * 1000) {
+      throw new BadRequestException('Oraliq 400 kundan oshmasligi kerak');
+    }
+    const range = { gte: from, lt: to };
+    const paidWhere = { deletedAt: null, status: 'PAID' as const, createdAt: range };
+
+    const [paidAgg, refundAgg, cancelledCount, payments, items, cashierRows, recent, lowStock, activeTables, expenses, shifts] =
+      await Promise.all([
+        this.prisma.order.aggregate({ where: paidWhere, _sum: { total: true, subtotal: true, discount: true, serviceFee: true }, _count: true }),
+        this.prisma.order.aggregate({ where: { deletedAt: null, status: 'REFUNDED', createdAt: range }, _sum: { total: true }, _count: true }),
+        this.prisma.order.count({ where: { deletedAt: null, status: 'CANCELLED', createdAt: range } }),
+        this.prisma.payment.groupBy({ by: ['method'], where: { deletedAt: null, order: paidWhere }, _sum: { amount: true }, _count: true }),
+        this.prisma.orderItem.findMany({
+          where: { deletedAt: null, status: { not: 'CANCELLED' }, order: paidWhere },
+          select: { menuItemId: true, name: true, quantity: true, totalPrice: true, costPrice: true, menuItem: { select: { name: true, category: { select: { id: true, name: true } } } } },
+        }),
+        this.prisma.order.groupBy({ by: ['cashierId'], where: paidWhere, _sum: { total: true }, _count: true }),
+        this.prisma.order.findMany({
+          where: { deletedAt: null, createdAt: range },
+          select: { id: true, orderNumber: true, status: true, type: true, total: true, createdAt: true, table: { select: { name: true } }, cashier: { select: { name: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+        }),
+        this.prisma.$queryRaw<{ id: string; name: string; currentQty: number; minQty: number; unit: string }[]>`
+          SELECT id, name, "currentQty"::float AS "currentQty", "minQty"::float AS "minQty", unit::text AS unit
+          FROM ingredients WHERE "deletedAt" IS NULL AND "currentQty" <= "minQty" ORDER BY name LIMIT 50`,
+        this.prisma.order.findMany({
+          where: { deletedAt: null, status: { in: ['OPEN', 'SENT'] }, tableId: { not: null } },
+          select: { tableId: true, total: true },
+        }),
+        this.prisma.cashMovement.aggregate({ where: { deletedAt: null, type: 'EXPENSE', createdAt: range }, _sum: { amount: true }, _count: true }),
+        this.prisma.shift.findMany({
+          where: { deletedAt: null, openedAt: { lt: to }, OR: [{ closedAt: null }, { closedAt: { gte: from } }] },
+          select: { id: true, openedAt: true, closedAt: true, startingCash: true, expectedCash: true, actualCash: true, cashDifference: true, totalSales: true, user: { select: { name: true } } },
+          orderBy: { openedAt: 'desc' },
+          take: 50,
+        }),
+      ]);
+
+    // Mahsulot va kategoriya bo'yicha
+    const byProduct = new Map<string, { menuItemId: string; name: string; category: string; quantity: number; revenue: number; cost: number }>();
+    const byCategory = new Map<string, { categoryId: string; name: string; quantity: number; revenue: number }>();
+    let cost = 0;
+    let costedRevenue = 0;
+    let revenueFromItems = 0;
+    for (const it of items) {
+      const q = Number(it.quantity);
+      const lineCost = Math.round(it.costPrice * q);
+      cost += lineCost;
+      revenueFromItems += it.totalPrice;
+      if (it.costPrice > 0) costedRevenue += it.totalPrice;
+      const p = byProduct.get(it.menuItemId) ?? { menuItemId: it.menuItemId, name: it.menuItem?.name || it.name, category: it.menuItem?.category?.name || '—', quantity: 0, revenue: 0, cost: 0 };
+      p.quantity += q;
+      p.revenue += it.totalPrice;
+      p.cost += lineCost;
+      byProduct.set(it.menuItemId, p);
+      const cat = it.menuItem?.category;
+      if (cat) {
+        const c = byCategory.get(cat.id) ?? { categoryId: cat.id, name: cat.name, quantity: 0, revenue: 0 };
+        c.quantity += q;
+        c.revenue += it.totalPrice;
+        byCategory.set(cat.id, c);
+      }
+    }
+
+    const cashierNames = await this.prisma.user.findMany({
+      where: { id: { in: cashierRows.map((c) => c.cashierId) } },
+      select: { id: true, name: true },
+    });
+    const nameOf = new Map(cashierNames.map((u) => [u.id, u.name]));
+
+    // Kunlik trend (server vaqti bo'yicha)
+    const paidOrders = await this.prisma.order.findMany({ where: paidWhere, select: { createdAt: true, total: true } });
+    const daily = new Map<string, { date: string; revenue: number; orders: number }>();
+    const hourly = Array.from({ length: 24 }, (_, h) => ({ hour: h, revenue: 0, orders: 0 }));
+    for (const o of paidOrders) {
+      const d = new Date(o.createdAt);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const row = daily.get(key) ?? { date: key, revenue: 0, orders: 0 };
+      row.revenue += o.total;
+      row.orders += 1;
+      daily.set(key, row);
+      hourly[d.getHours()].revenue += o.total;
+      hourly[d.getHours()].orders += 1;
+    }
+
+    const revenue = paidAgg._sum.total ?? 0;
+    const ordersCount = paidAgg._count;
+    const expensesTotal = expenses._sum.amount ?? 0;
+    const costCoverage = revenueFromItems > 0 ? Math.round((costedRevenue / revenueFromItems) * 100) : 0;
+
+    return {
+      range: { from: from.toISOString(), to: to.toISOString() },
+      revenue,
+      ordersCount,
+      averageCheck: ordersCount ? Math.round(revenue / ordersCount) : 0,
+      subtotal: paidAgg._sum.subtotal ?? 0,
+      discounts: paidAgg._sum.discount ?? 0,
+      serviceFees: paidAgg._sum.serviceFee ?? 0,
+      refunds: { count: refundAgg._count, amount: refundAgg._sum.total ?? 0 },
+      cancelledCount,
+      payments: payments.map((p) => ({ method: p.method, amount: p._sum.amount ?? 0, count: p._count })).sort((a, b) => b.amount - a.amount),
+      topProducts: [...byProduct.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 15),
+      byCategory: [...byCategory.values()].sort((a, b) => b.revenue - a.revenue),
+      byCashier: cashierRows
+        .map((c) => ({ cashierId: c.cashierId, name: nameOf.get(c.cashierId) || '—', orders: c._count, revenue: c._sum.total ?? 0 }))
+        .sort((a, b) => b.revenue - a.revenue),
+      daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+      hourly,
+      cost,
+      costCoverage,
+      grossProfit: revenueFromItems - cost,
+      expenses: { count: expenses._count, amount: expensesTotal },
+      netAfterExpenses: revenueFromItems - cost - expensesTotal,
+      lowStock,
+      activeTables: { count: new Set(activeTables.map((t) => t.tableId)).size, openTotal: activeTables.reduce((s, t) => s + t.total, 0) },
+      recentOrders: recent,
+      shifts,
+    };
   }
 }

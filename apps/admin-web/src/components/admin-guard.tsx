@@ -7,6 +7,9 @@ import { AdminUser, ApiError, NetworkError, apiRequest, clearSession, getAccessT
  * Admin sahifalarini himoyalash: token bo'lmasa yoki rol ADMIN bo'lmasa — /login.
  * Bu faqat UI darajasi; haqiqiy ruxsat serverda (RolesGuard) tekshiriladi.
  */
+/** Admin panelga kira oladigan rollar (har bir endpoint serverda alohida tekshiriladi) */
+export const PANEL_ROLES = ['OWNER', 'ADMIN', 'MANAGER'];
+
 export function AdminGuard({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<'checking' | 'ok' | 'offline'>('checking');
 
@@ -17,7 +20,7 @@ export function AdminGuard({ children }: { children: React.ReactNode }) {
     }
     apiRequest<AdminUser>('/auth/me')
       .then((me) => {
-        if (me.role !== 'ADMIN') {
+        if (!PANEL_ROLES.includes(me.role)) {
           clearSession();
           redirectToLogin();
           return;

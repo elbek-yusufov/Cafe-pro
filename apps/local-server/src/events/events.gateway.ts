@@ -10,11 +10,31 @@ import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { corsOriginCallback, getJwtAccessSecret } from '../config/security.config';
 
-type StaffRole = 'ADMIN' | 'CASHIER' | 'WAITER';
-const KNOWN_ROLES: StaffRole[] = ['ADMIN', 'CASHIER', 'WAITER'];
-const ALL_STAFF: StaffRole[] = KNOWN_ROLES;
+type StaffRole = 'OWNER' | 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN';
+const KNOWN_ROLES: StaffRole[] = ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN'];
+/** Zal/kassa xodimlari (oshxonasiz) */
+const FRONT: StaffRole[] = ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER', 'WAITER'];
+/** Oshxona hodisalari: zal + oshxona */
+const KITCHEN_FLOW: StaffRole[] = [...FRONT, 'KITCHEN'];
 
 const roomFor = (role: StaffRole) => `role:${role}`;
+
+/**
+ * Buyurtma hodisalari faqat qisqa xulosa bilan yuboriladi (mijozlar ro'yxatni REST orqali qayta yuklaydi).
+ * To'liq obyekt yuborilmaydi — unda menuItem.costPrice kabi maxfiy maydonlar bo'lishi mumkin.
+ */
+function orderSummary(order: any, withTotals: boolean) {
+  if (!order || typeof order !== 'object') return order;
+  return {
+    id: order.id,
+    orderNumber: order.orderNumber,
+    status: order.status,
+    type: order.type,
+    tableId: order.tableId ?? null,
+    updatedAt: order.updatedAt,
+    ...(withTotals ? { subtotal: order.subtotal, total: order.total } : {}),
+  };
+}
 
 /** Menyu o'zgarish turi (POS va Admin ro'yxatni qayta yuklaydi). */
 export interface MenuChangeEvent {
@@ -111,43 +131,44 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   emitOrderCreated(order: any) {
-    this.emitToRoles(ALL_STAFF, 'order:created', order);
+    this.emitToRoles(FRONT, 'order:created', orderSummary(order, true));
   }
 
   emitOrderUpdated(order: any) {
-    this.emitToRoles(ALL_STAFF, 'order:updated', order);
+    this.emitToRoles(FRONT, 'order:updated', orderSummary(order, true));
+    this.emitToRoles(['KITCHEN'], 'order:updated', orderSummary(order, false));
   }
 
   emitTableStatus(table: any) {
-    this.emitToRoles(ALL_STAFF, 'table:status', table);
+    this.emitToRoles(FRONT, 'table:status', table);
   }
 
   emitKitchenTicket(ticket: any) {
-    this.emitToRoles(ALL_STAFF, 'kitchen:new-ticket', ticket);
+    this.emitToRoles(KITCHEN_FLOW, 'kitchen:new-ticket', ticket);
   }
 
   emitKdsItemStatus(payload: unknown) {
-    this.emitToRoles(ALL_STAFF, 'kds:item-status', payload);
+    this.emitToRoles(KITCHEN_FLOW, 'kds:item-status', payload);
   }
 
   /** Ombor qoldig'i kam — faqat admin va kassirlar */
   emitStockLow(stock: any) {
-    this.emitToRoles(['ADMIN', 'CASHIER'], 'stock:low', stock);
+    this.emitToRoles(['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'], 'stock:low', stock);
   }
 
   /** Menyu (taom/kategoriya) o'zgardi — POS, ofitsiantlar va Admin ro'yxatni yangilaydi */
   emitMenuChanged(change: MenuChangeEvent) {
-    this.emitToRoles(ALL_STAFF, 'menu:updated', change);
+    this.emitToRoles(KITCHEN_FLOW, 'menu:updated', change);
   }
 
   /** QR menyudan ofitsiant/hisob chaqiruvi */
   emitGuestCall(payload: unknown) {
-    this.emitToRoles(ALL_STAFF, 'guest:call-service', payload);
+    this.emitToRoles(FRONT, 'guest:call-service', payload);
   }
 
   /** Sinxronizatsiya holati — faqat admin */
   emitSyncStatus(status: unknown) {
-    this.emitToRoles(['ADMIN'], 'sync:status', status);
+    this.emitToRoles(['OWNER', 'ADMIN'], 'sync:status', status);
   }
 
   @SubscribeMessage('ping')

@@ -30,9 +30,10 @@ function LoginForm() {
       });
 
       const target = next.startsWith('/') && !next.startsWith('//') ? next : '/';
-      if (tokens.user.role !== 'ADMIN' && !NON_ADMIN_ALLOWED_PATHS.some((p) => target.startsWith(p))) {
+      const panelRole = ['OWNER', 'ADMIN', 'MANAGER'].includes(tokens.user.role);
+      if (!panelRole && !NON_ADMIN_ALLOWED_PATHS.some((p) => target.startsWith(p))) {
         clearSession();
-        setError('Admin panelga faqat ADMIN roli kira oladi.');
+        setError('Bu hisob bilan faqat oshxona ekraniga (/kds) kirish mumkin.');
         return;
       }
 

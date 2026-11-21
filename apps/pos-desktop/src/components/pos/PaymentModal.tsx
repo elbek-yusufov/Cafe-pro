@@ -21,7 +21,7 @@ interface PaymentModalProps {
     method: 'CASH' | 'CARD' | 'QRIS' | 'MIXED';
     receivedAmount: number;
     changeAmount: number;
-  }) => void;
+  }) => Promise<void> | void;
   initialMethod?: 'CASH' | 'CARD' | 'QRIS' | 'MIXED';
 }
 
@@ -36,6 +36,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const [selectedMethod, setSelectedMethod] = useState<'CASH' | 'CARD' | 'QRIS' | 'MIXED'>(initialMethod);
   const [receivedAmount, setReceivedAmount] = useState<number>(orderTotal);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Qaytim
   const changeAmount = useMemo(() => {
@@ -53,21 +54,27 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     setReceivedAmount(orderTotal);
   };
 
-  const handleCheckout = () => {
+  // Server bilan haqiqiy to'lov: xato bo'lsa modal ochiq qoladi va sababi ko'rsatiladi
+  const handleCheckout = async () => {
+    if (isProcessing) return; // ikki marta bosishdan himoya (server ham takroriy to'lovni rad etadi)
     if (selectedMethod === 'CASH' && !isExactOrMore) {
-      alert('Qabul qilingan summa buyurtma summasidan kam bo\'lmasligi kerak!');
+      setSubmitError('Qabul qilingan summa buyurtma summasidan kam bo\'lmasligi kerak!');
       return;
     }
 
     setIsProcessing(true);
-    setTimeout(() => {
-      setIsProcessing(false);
-      onSuccess({
+    setSubmitError(null);
+    try {
+      await onSuccess({
         method: selectedMethod,
-        receivedAmount: selectedMethod === 'CASH' ? receivedAmount : orderTotal,
+        receivedAmount: selectedMethod === 'CASH' || selectedMethod === 'MIXED' ? receivedAmount : orderTotal,
         changeAmount,
       });
-    }, 400);
+    } catch (e) {
+      setSubmitError((e as Error).message || 'To\'lovni saqlab bo\'lmadi');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -144,6 +151,25 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               );
             })}
           </div>
+
+          {/* Aralash: naqd qism kiritiladi, qolgani karta orqali */}
+          {selectedMethod === 'MIXED' && (
+            <div className="space-y-2 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+              <label className="text-xs font-bold text-slate-700 block">Naqd qism (qolgani karta):</label>
+              <input
+                type="number"
+                min={0}
+                max={orderTotal}
+                value={Math.min(receivedAmount, orderTotal)}
+                onChange={(e) => setReceivedAmount(Math.min(Math.max(Number(e.target.value) || 0, 0), orderTotal))}
+                className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-sm focus:ring-1 focus:ring-teal-500"
+              />
+              <div className="flex justify-between text-xs font-bold text-slate-600">
+                <span>Naqd: {formatCurrency(Math.min(receivedAmount, orderTotal))}</span>
+                <span>Karta: {formatCurrency(orderTotal - Math.min(receivedAmount, orderTotal))}</span>
+              </div>
+            </div>
+          )}
 
           {/* CASH Specific Input & Denominations */}
           {selectedMethod === 'CASH' && (
@@ -237,10 +263,17 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           )}
         </div>
 
+        {submitError && (
+          <div className="mx-6 mb-3 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">
+            {submitError}
+          </div>
+        )}
+
         {/* Modal Footer */}
         <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
           <button
             onClick={onClose}
+            disabled={isProcessing}
             className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-100 transition"
           >
             Bekor qilish

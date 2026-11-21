@@ -1,3 +1,4 @@
+import { isSupervisor } from '../auth/roles';
 import {
   Controller,
   Get,
@@ -27,7 +28,8 @@ import { Actor } from '../audit/audit.service';
 /** Tannarx va foyda ma'lumotlari faqat ADMIN uchun — kassir/ofitsiantga yuborilmaydi. */
 const ADMIN_ONLY_FIELDS = ['costPrice', 'profit', 'markupPercent', 'marginPercent', 'recipes'];
 function forRole<T extends Record<string, any>>(item: T, role?: string): T {
-  if (role === Role.ADMIN) return item;
+  // Tannarx/foyda — ADMIN, OWNER va MANAGER (xarid va narxlash uchun)
+  if (isSupervisor(role)) return item;
   const copy: Record<string, any> = { ...item };
   for (const f of ADMIN_ONLY_FIELDS) delete copy[f];
   if (Array.isArray(copy.variants)) copy.variants = copy.variants.map(({ costPrice, ...v }: any) => v);
@@ -78,7 +80,7 @@ export class MenuItemsController {
       kitchenStationId,
       isFeatured: isFeatured !== undefined ? isFeatured === 'true' : undefined,
       isAvailable: isAvailable !== undefined ? isAvailable === 'true' : undefined,
-      includeInactive: includeInactive === 'true' && role === Role.ADMIN,
+      includeInactive: includeInactive === 'true' && isSupervisor(role),
     });
     return items.map((i) => forRole(i, role));
   }

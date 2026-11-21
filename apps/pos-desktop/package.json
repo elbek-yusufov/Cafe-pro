@@ -4,11 +4,15 @@
   "private": true,
   "type": "module",
   "description": "OshxonaPOS Kassa Sensorli Desktop Ilovasi (Touchscreen POS)",
-  "main": "electron/main.js",
+  "main": "electron-dist/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:compile": "tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('electron-dist/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "electron:dev": "pnpm electron:compile && POS_ELECTRON_DEV=1 electron .",
+    "electron:start": "pnpm build && pnpm electron:compile && electron .",
+    "dist:win": "pnpm build && pnpm electron:compile && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@oshxona/shared": "workspace:*",
@@ -24,9 +28,54 @@
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
     "vite": "^6.2.0"
+  },
+  "author": "OshxonaPOS",
+  "build": {
+    "appId": "uz.oshxona.pos",
+    "productName": "OshxonaPOS Kassa",
+    "copyright": "© OshxonaPOS",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "electron-dist/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "extraMetadata": {
+      "main": "electron-dist/main.js",
+      "dependencies": {}
+    },
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "artifactName": "OshxonaPOS-Kassa-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OshxonaPOS Kassa",
+      "language": "1091"
+    }
   }
 }

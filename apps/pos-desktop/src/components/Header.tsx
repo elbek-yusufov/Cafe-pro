@@ -25,6 +25,8 @@ interface HeaderProps {
   selectedTable: string;
   orderType: 'DINE_IN' | 'TAKEAWAY';
   onSelectTable: (table: string) => void;
+  /** Serverdagi stollar (id, nom, band/bo'sh) */
+  tableOptions?: { id: string; name: string; occupied?: boolean }[];
   onSelectOrderType: (type: 'DINE_IN' | 'TAKEAWAY') => void;
 }
 
@@ -41,6 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
   selectedTable,
   orderType,
   onSelectTable,
+  tableOptions = [],
   onSelectOrderType,
 }) => {
   return (
@@ -90,9 +93,11 @@ export const Header: React.FC<HeaderProps> = ({
                 onChange={(e) => onSelectTable(e.target.value)}
                 className="bg-white text-slate-800 border border-slate-200 font-medium rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-teal-500"
               >
-                {['Stol 1', 'Stol 2', 'Stol 3', 'Stol 4', 'Stol 5', 'Stol 6', 'VIP Zal 1', 'VIP Zal 2'].map((tbl) => (
-                  <option key={tbl} value={tbl}>
-                    {tbl}
+                {tableOptions.length === 0 && <option value="">Stollar yuklanmoqda…</option>}
+                {tableOptions.map((tbl) => (
+                  <option key={tbl.id} value={tbl.id}>
+                    {tbl.name}
+                    {tbl.occupied ? ' • band' : ''}
                   </option>
                 ))}
               </select>

@@ -2,9 +2,10 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-  UnauthorizedException,
+  ConflictException,
 } from '@nestjs/common';
-import * as bcrypt from 'bcrypt';
+import { AuditService, Actor } from '../audit/audit.service';
+import { SupervisorApprovalService } from '../auth/supervisor-approval.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { StockService } from '../stock/stock.service';
@@ -26,17 +27,20 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly eventsGateway: EventsGateway,
     private readonly stockService: StockService,
+    private readonly audit: AuditService,
+    private readonly approval: SupervisorApprovalService,
   ) {}
 
   /**
    * To'lovni qabul qilish (Naqd, Karta, Click, Payme, Nasiya yoki Aralash)
    */
-  async processPayment(orderId: string, dto: ProcessPaymentDto, cashierId: string, deviceId?: string) {
-    const order = await this.prisma.order.findUnique({
+  async processPayment(orderId: string, dto: ProcessPaymentDto, actor: Actor) {
+    const deviceId = actor.deviceId;
+    const order = await this.prisma.order.findFirst({
       where: { id: orderId, deletedAt: null },
       include: {
         table: true,
-        items: { where: { deletedAt: null }, include: { menuItem: true } },
+        items: { where: { deletedAt: null, status: { not: 'CANCELLED' } }, include: { menuItem: true } },
         cashier: true,
       },
     });
@@ -44,44 +48,67 @@ export class PaymentsService {
     if (!order) {
       throw new NotFoundException('Buyurtma topilmadi');
     }
-
     if (order.status === OrderStatus.PAID) {
-      throw new BadRequestException('Bu buyurtma allaqachon to\'langan');
+      throw new ConflictException('Bu buyurtma allaqachon to\'langan');
+    }
+    if (order.status !== OrderStatus.OPEN && order.status !== OrderStatus.SENT) {
+      throw new BadRequestException('Bekor qilingan yoki qaytarilgan buyurtmaga to\'lov qabul qilib bo\'lmaydi');
+    }
+    if (order.items.length === 0 || order.total <= 0) {
+      throw new BadRequestException('Bo\'sh buyurtmani to\'lab bo\'lmaydi');
+    }
+    if (!dto.payments?.length) {
+      throw new BadRequestException('Kamida bitta to\'lov kiritilishi shart');
     }
 
-    if (order.status === OrderStatus.CANCELLED) {
-      throw new BadRequestException('Bekor qilingan buyurtmaga to\'lov qabul qilib bo\'lmaydi');
-    }
-
-    // To'lovlar yig'indisini tekshirish
+    // Summalar SERVER hisoblagan jamiga aniq teng bo'lishi shart (ortiqcha "to'lov" tushum sifatida yozilmaydi).
+    // Naqdda mijoz ko'proq bersa — bu `received`, farqi qaytim.
     const totalPaid = dto.payments.reduce((sum, p) => sum + p.amount, 0);
-    if (totalPaid < order.total) {
+    if (totalPaid !== order.total) {
       throw new BadRequestException(
-        `Yetarli mablag' kiritilmadi! Buyurtma summasi: ${order.total} so'm, kiritildi: ${totalPaid} so'm`,
+        `To'lov summasi buyurtma summasiga teng emas: kerak ${order.total} so'm, kiritildi ${totalPaid} so'm`,
       );
     }
+    for (const p of dto.payments) {
+      if (p.method === PaymentMethod.CASH && p.received !== undefined && p.received < p.amount) {
+        throw new BadRequestException('Naqd: mijozdan olingan summa to\'lov summasidan kam');
+      }
+      if (p.method !== PaymentMethod.CASH && p.received !== undefined && p.received !== p.amount) {
+        throw new BadRequestException('Qaytim faqat naqd to\'lovda bo\'ladi');
+      }
+    }
 
-    // Sozlamalarni olish (Chek uchun restoran nomi, xizmat haqi va h.k.)
     const settings = await this.getSettingsMap();
+    const paperWidth = settings.RECEIPT_PAPER_WIDTH === '58' ? 58 : 80;
 
-    const paymentResult = await this.prisma.$transaction(async (tx) => {
+    const { result, lowStock } = await this.prisma.$transaction(async (tx) => {
+      // 1. Atomik holat o'tishi — ikki marta bosish / parallel kassa / qayta yuborish ikkinchi to'lovni yaratmaydi
+      const moved = await tx.order.updateMany({
+        where: { id: orderId, status: { in: [OrderStatus.OPEN, OrderStatus.SENT] }, total: order.total },
+        data: { status: OrderStatus.PAID },
+      });
+      if (moved.count === 0) {
+        throw new ConflictException('Buyurtma allaqachon to\'langan yoki o\'zgargan — qayta yuklang');
+      }
+
       let totalChange = 0;
       const createdPayments: any[] = [];
 
-      // 1. Har bir to'lov usulini qayta ishlash
       for (const p of dto.payments) {
         let paymentCustomerId = p.customerId;
 
-        // Agar Nasiya (Qarz) bo'lsa
         if (p.method === PaymentMethod.DEBT) {
           if (!p.customerId && !p.customerPhone) {
             throw new BadRequestException('Nasiya uchun mijoz telefoni yoki IDsi kiritilishi shart');
           }
 
           let customer = p.customerId
-            ? await tx.customer.findUnique({ where: { id: p.customerId } })
+            ? await tx.customer.findFirst({ where: { id: p.customerId, deletedAt: null } })
             : await tx.customer.findUnique({ where: { phone: p.customerPhone! } });
 
+          if (!customer && p.customerId) {
+            throw new NotFoundException('Mijoz topilmadi');
+          }
           if (!customer) {
             customer = await tx.customer.create({
               data: {
@@ -95,17 +122,11 @@ export class PaymentsService {
           } else {
             customer = await tx.customer.update({
               where: { id: customer.id },
-              data: {
-                debtBalance: { increment: p.amount },
-                version: { increment: 1 },
-                deviceId,
-              },
+              data: { debtBalance: { increment: p.amount }, version: { increment: 1 }, deviceId },
             });
           }
-
           paymentCustomerId = customer.id;
 
-          // Qarz operatsiyasini yozish
           await tx.debtTransaction.create({
             data: {
               id: generateUUIDv7(),
@@ -117,59 +138,48 @@ export class PaymentsService {
           });
         }
 
-        // Qaytim hisoblash (faqat naqdda)
-        let change = 0;
-        if (p.method === PaymentMethod.CASH && p.received && p.received > p.amount) {
-          change = p.received - p.amount;
-          totalChange += change;
-        }
+        const received = p.method === PaymentMethod.CASH ? p.received ?? p.amount : p.amount;
+        const change = p.method === PaymentMethod.CASH ? received - p.amount : 0;
+        totalChange += change;
 
-        const payment = await tx.payment.create({
-          data: {
-            id: generateUUIDv7(),
-            orderId,
-            method: p.method,
-            amount: p.amount,
-            received: p.received || p.amount,
-            change,
-            transactionId: p.transactionId,
-            customerId: paymentCustomerId,
-            deviceId,
-          },
-        });
-
-        createdPayments.push(payment);
+        createdPayments.push(
+          await tx.payment.create({
+            data: {
+              id: generateUUIDv7(),
+              orderId,
+              method: p.method,
+              amount: p.amount,
+              received,
+              change,
+              transactionId: p.transactionId,
+              customerId: paymentCustomerId,
+              deviceId,
+            },
+          }),
+        );
       }
 
-      // 2. Buyurtma holatini PAID ga o'tkazish
       const updatedOrder = await tx.order.update({
         where: { id: orderId },
-        data: {
-          status: OrderStatus.PAID,
-          version: { increment: 1 },
-          deviceId,
-        },
+        data: { version: { increment: 1 }, deviceId },
       });
 
-      // 3. Stolni BO'SHATISH (AVAILABLE)
       if (order.tableId) {
         await tx.table.update({
           where: { id: order.tableId },
           data: { status: TableStatus.AVAILABLE, deviceId },
         });
-        this.eventsGateway.emitTableStatus({ id: order.tableId, status: TableStatus.AVAILABLE });
       }
 
-      // 4. Chek matnini shakllantirish (ESC/POS 80mm format)
       const receiptContent = formatCustomerReceipt({
-        restaurantName: settings.RESTAURANT_NAME || 'Rayhon Milliy Taomlar',
+        restaurantName: settings.RESTAURANT_NAME || 'Restoran',
         address: settings.RESTAURANT_ADDRESS,
         phone: settings.RESTAURANT_PHONE,
         receiptNo: order.orderNumber,
         dateTime: new Date(),
         cashierName: order.cashier?.name || 'Kassir',
         tableName: order.table?.name,
-        paperWidth: 80,
+        paperWidth,
         isCopy: false,
         items: order.items.map((i) => ({
           name: i.name,
@@ -180,32 +190,33 @@ export class PaymentsService {
         })),
         subtotal: order.subtotal,
         serviceFee: order.serviceFee,
-        serviceFeePercent: parseInt(settings.SERVICE_FEE_PERCENT || '10', 10),
+        serviceFeePercent: Number(settings.SERVICE_FEE_PERCENT ?? 0) || 0,
         discount: order.discount,
         total: order.total,
-        payments: dto.payments.map((p) => ({
+        payments: createdPayments.map((p) => ({
           method: p.method,
           amount: p.amount,
           received: p.received,
-          change: p.received ? p.received - p.amount : 0,
+          change: p.change,
         })),
         footerNote: settings.RECEIPT_FOOTER_NOTE || 'Xaridingiz uchun rahmat!',
       });
 
-      // 5. Chekni Receipt jadvaliga saqlash
       const receipt = await tx.receipt.create({
         data: {
           id: generateUUIDv7(),
           orderId,
           receiptNo: order.orderNumber,
           type: ReceiptType.SALE,
-          printCount: 1,
+          printCount: 0,
           content: receiptContent,
           deviceId,
         },
       });
 
-      // 6. Outbox Sync Queue
+      // Retsept bo'yicha ombordan chiqim — shu tranzaksiyada
+      const low = await this.stockService.deductStockForOrder(orderId, deviceId, tx);
+
       await tx.syncQueue.create({
         data: {
           id: generateUUIDv7(),
@@ -217,43 +228,57 @@ export class PaymentsService {
         },
       });
 
-      this.eventsGateway.emitOrderUpdated(updatedOrder);
+      await this.audit.log(
+        actor,
+        'PAYMENT_CREATE',
+        {
+          orderId,
+          orderNumber: order.orderNumber,
+          total: order.total,
+          methods: createdPayments.map((p) => ({ method: p.method, amount: p.amount })),
+          change: totalChange,
+        },
+        tx,
+      );
 
       return {
-        success: true,
-        message: 'To\'lov muvaffaqiyatli qabul qilindi',
-        orderNumber: order.orderNumber,
-        total: order.total,
-        totalPaid,
-        change: totalChange,
-        receiptId: receipt.id,
-        receiptText: receiptContent,
+        lowStock: low,
+        result: {
+          success: true,
+          message: 'To\'lov muvaffaqiyatli qabul qilindi',
+          orderId,
+          orderNumber: order.orderNumber,
+          subtotal: order.subtotal,
+          serviceFee: order.serviceFee,
+          discount: order.discount,
+          total: order.total,
+          totalPaid,
+          change: totalChange,
+          payments: createdPayments.map((p) => ({ id: p.id, method: p.method, amount: p.amount, received: p.received, change: p.change })),
+          receiptId: receipt.id,
+          receiptText: receiptContent,
+          paperWidth,
+          updatedOrder,
+        },
       };
     });
 
-    // 7. Retsept bo'yicha ombordan avtomatik chiqim qilish
-    await this.stockService.deductStockForOrder(orderId, deviceId);
+    // Real-vaqt hodisalari faqat commit'dan keyin
+    this.eventsGateway.emitOrderUpdated({ ...result.updatedOrder, status: OrderStatus.PAID });
+    if (order.tableId) this.eventsGateway.emitTableStatus({ id: order.tableId, status: TableStatus.AVAILABLE });
+    this.stockService.notifyLowStock(lowStock);
 
-    return paymentResult;
+    const { updatedOrder: _omit, ...response } = result;
+    return response;
   }
 
   /**
    * To'lovni qaytarish (Refund — Faqat Admin PIN tasdig'i bilan)
    */
-  async refundPayment(orderId: string, dto: RefundPaymentDto, userId: string, deviceId?: string) {
-    // 1. Admin PIN tekshirish
-    const admin = await this.prisma.user.findFirst({
-      where: { role: Role.ADMIN, isActive: true },
-    });
-
-    if (!admin) {
-      throw new UnauthorizedException('Tizimda faol admin topilmadi');
-    }
-
-    const isPinValid = await bcrypt.compare(dto.adminPin, admin.pinHash);
-    if (!isPinValid) {
-      throw new UnauthorizedException('Admin PIN kodi noto\'g\'ri! Qaytarish rad etildi');
-    }
+  async refundPayment(orderId: string, dto: RefundPaymentDto, actor: Actor) {
+    const userId = actor.id;
+    const deviceId = actor.deviceId;
+    const approvedBy = await this.approval.approve(actor, dto.adminPin, 'To\'lovni qaytarish');
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId, deletedAt: null },
@@ -264,12 +289,20 @@ export class PaymentsService {
       throw new NotFoundException('Buyurtma topilmadi');
     }
 
+    if (order.status === OrderStatus.REFUNDED) {
+      throw new ConflictException('Buyurtma allaqachon qaytarilgan');
+    }
     if (order.status !== OrderStatus.PAID) {
       throw new BadRequestException('Faqat to\'langan buyurtmalarni qaytarish mumkin');
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // 2. Buyurtma holatini REFUNDED ga o'tkazish
+      // 2. Atomik o'tish PAID → REFUNDED (ikki marta qaytarib bo'lmaydi)
+      const moved = await tx.order.updateMany({
+        where: { id: orderId, status: OrderStatus.PAID },
+        data: { status: OrderStatus.REFUNDED },
+      });
+      if (moved.count === 0) throw new ConflictException('Buyurtma allaqachon qaytarilgan');
       const refundedOrder = await tx.order.update({
         where: { id: orderId },
         data: {
@@ -315,6 +348,7 @@ export class PaymentsService {
             orderNumber: order.orderNumber,
             total: order.total,
             reason: dto.reason,
+            approvedBy,
           },
           deviceId,
         },

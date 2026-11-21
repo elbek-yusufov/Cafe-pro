@@ -28,10 +28,9 @@ export class PaymentsController {
   pay(
     @Param('id') orderId: string,
     @Body() dto: ProcessPaymentDto,
-    @CurrentUser('id') cashierId: string,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: any,
   ) {
-    return this.paymentsService.processPayment(orderId, dto, cashierId, deviceId);
+    return this.paymentsService.processPayment(orderId, dto, user);
   }
 
   @Post(':id/refund')
@@ -40,9 +39,8 @@ export class PaymentsController {
   refund(
     @Param('id') orderId: string,
     @Body() dto: RefundPaymentDto,
-    @CurrentUser('id') userId: string,
-    @CurrentUser('deviceId') deviceId?: string,
+    @CurrentUser() user: any,
   ) {
-    return this.paymentsService.refundPayment(orderId, dto, userId, deviceId);
+    return this.paymentsService.refundPayment(orderId, dto, user);
   }
 }

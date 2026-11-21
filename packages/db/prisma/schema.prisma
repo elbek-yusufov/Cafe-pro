@@ -12,9 +12,12 @@ datasource db {
 // --------------------------------------------------------
 
 enum Role {
-  ADMIN
+  OWNER   // egasi — barcha huquqlar
+  ADMIN   // administrator — barcha huquqlar
+  MANAGER // menejer — kassa + tasdiqlash + hisobot/menyu/ombor
   CASHIER
   WAITER
+  KITCHEN // oshxona — faqat KDS
 }
 
 enum DeviceType {
@@ -440,7 +443,7 @@ model Table {
 
 model Order {
   id            String        @id
-  orderNumber   String        // masalan K1-0425-0037
+  orderNumber   String        @unique // masalan K1-0425-0037
   type          OrderType     @default(DINE_IN)
   status        OrderStatus   @default(OPEN)
   branchId      String?
@@ -453,6 +456,7 @@ model Order {
   subtotal      Int           @default(0) // taomlar jami
   serviceFee    Int           @default(0) // xizmat haqi
   discount      Int           @default(0) // chegirma summasi
+  discountPercent Int         @default(0) // qo'llangan chegirma foizi (taom qo'shilsa qayta hisoblanadi)
   discountNote  String?
   total         Int           @default(0) // to'lov summasi
   createdAt     DateTime      @default(now())

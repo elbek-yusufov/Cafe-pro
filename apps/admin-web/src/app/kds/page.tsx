@@ -22,7 +22,6 @@ interface KitchenItem {
   id: string;
   name: string;
   quantity: number;
-  unitPrice: number;
   status: 'PENDING' | 'COOKING' | 'READY' | 'SERVED';
   notes?: string | null;
   modifiers?: Array<{ name: string; price: number }>;
@@ -71,6 +70,13 @@ export default function KdsPage() {
   const [now, setNow] = useState<number>(Date.now());
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const socketRef = useRef<Socket | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // Ovoz holati ref orqali — o'zgarganda socket qayta ulanmaydi
+  const soundRef = useRef(soundEnabled);
+  soundRef.current = soundEnabled;
+  // Bir xil chiptaga takroriy signal bermaslik
+  const seenTickets = useRef<Set<string>>(new Set());
 
   // Vaqtni har 10 soniyada yangilab turish (taymerlar uchun)
   useEffect(() => {
@@ -83,63 +89,19 @@ export default function KdsPage() {
     try {
       setLoading(true);
       const data = await apiRequest<KitchenOrder[]>('/orders/kitchen/tickets');
-      setOrders(data);
+      // Prisma Decimal miqdor satr bo'lib keladi — son sifatida hisoblash
+      setOrders(data.map((o) => ({ ...o, items: o.items.map((it) => ({ ...it, quantity: Number(it.quantity) })) })));
+      setLoadError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         redirectToLogin();
         return;
       }
-      // Namuna buyurtmalar faqat development rejimida — oshxonada soxta buyurtma ko'rsatilmasligi kerak
-      if (process.env.NODE_ENV !== 'production') loadFallbackOrders();
+      // Namuna (soxta) buyurtmalar ko'rsatilmaydi — oshxona faqat haqiqiy buyurtmalarni ko'radi
+      setLoadError((err as Error).message || 'Buyurtmalarni yuklab bo\'lmadi');
     } finally {
       setLoading(false);
     }
-  };
-
-  const loadFallbackOrders = () => {
-    const initialDemo: KitchenOrder[] = [
-      {
-        id: 'ord-101',
-        orderNumber: 'K1-1120-0012',
-        type: 'DINE_IN',
-        createdAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
-        status: 'COOKING',
-        notes: 'Piyozsiz bo\'lsin',
-        table: { name: 'T-3 (Asosiy zal)' },
-        items: [
-          { id: 'item-1', name: 'Toshkent To\'y Oshi (1 porsiya)', quantity: 2, unitPrice: 38000, status: 'COOKING', notes: 'Zirasi ko\'proq' },
-          { id: 'item-2', name: 'Achichuk salati', quantity: 1, unitPrice: 12000, status: 'READY' },
-          { id: 'item-3', name: 'Tandir non', quantity: 2, unitPrice: 5000, status: 'READY' },
-        ],
-      },
-      {
-        id: 'ord-102',
-        orderNumber: 'K1-1120-0014',
-        type: 'TAKEAWAY',
-        createdAt: new Date(Date.now() - 17 * 60 * 1000).toISOString(),
-        status: 'COOKING',
-        notes: 'Olib ketish uchun zich o\'rashing',
-        table: null,
-        items: [
-          { id: 'item-4', name: 'Qozon kabob (mol go\'shti)', quantity: 3, unitPrice: 55000, status: 'COOKING', notes: 'Go\'shti qovurilganroq bo\'lsin' },
-          { id: 'item-5', name: 'Qo\'y go\'shtli shashlik', quantity: 4, unitPrice: 18000, status: 'PENDING' },
-          { id: 'item-6', name: 'Suzma ko\'katli', quantity: 2, unitPrice: 8000, status: 'READY' },
-        ],
-      },
-      {
-        id: 'ord-103',
-        orderNumber: 'K1-1120-0015',
-        type: 'DINE_IN',
-        createdAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
-        status: 'SENT',
-        table: { name: 'VIP-2 (Terrasa)' },
-        items: [
-          { id: 'item-7', name: 'Uyg\'ur Lag\'moni', quantity: 2, unitPrice: 42000, status: 'COOKING' },
-          { id: 'item-8', name: 'Qovurma Chuchvara', quantity: 1, unitPrice: 32000, status: 'PENDING' },
-        ],
-      },
-    ];
-    setOrders(initialDemo);
   };
 
   // Socket.IO ulanishi
@@ -157,14 +119,23 @@ export default function KdsPage() {
       setIsConnected(false);
     });
 
+    // Qayta ulanganda o'tkazib yuborilgan buyurtmalarni olish
+    socket.io.on('reconnect', () => {
+      fetchKitchenOrders();
+    });
+
     // Server tokenni rad etsa (muddati tugagan / yo'q)
     socket.on('auth:error', () => {
       setIsConnected(false);
     });
 
     // Yangi chek yuborilganda
-    socket.on('kitchen:new-ticket', () => {
-      if (soundEnabled) playBeep(880, 400);
+    socket.on('kitchen:new-ticket', (ticket: { orderId?: string; time?: string }) => {
+      const key = `${ticket?.orderId}:${ticket?.time}`;
+      if (!seenTickets.current.has(key)) {
+        seenTickets.current.add(key);
+        if (soundRef.current) playBeep(880, 400);
+      }
       fetchKitchenOrders();
     });
 
@@ -185,7 +156,8 @@ export default function KdsPage() {
     return () => {
       socket.disconnect();
     };
-  }, [soundEnabled]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Taom holatini bitta tugma bilan o'zgartirish (COOKING -> READY -> SERVED)
   const handleItemStatusToggle = async (orderId: string, itemId: string, currentStatus: string) => {
@@ -215,7 +187,11 @@ export default function KdsPage() {
         method: 'PATCH',
         body: { status: nextStatus },
       });
+      setActionError(null);
     } catch (e) {
+      // Server rad etdi — ekranni haqiqiy holatga qaytarish
+      setActionError((e as Error).message || 'Holatni saqlab bo\'lmadi');
+      fetchKitchenOrders();
       // serverga ulanish offline bo'lsa ham UI ishlab turadi
     }
   };
@@ -240,7 +216,10 @@ export default function KdsPage() {
             method: 'PATCH',
             body: { status: 'READY' },
           });
-        } catch (e) {}
+        } catch (e) {
+          setActionError((e as Error).message || 'Holatni saqlab bo\'lmadi');
+          fetchKitchenOrders();
+        }
       }
     }
   };
@@ -355,7 +334,17 @@ export default function KdsPage() {
 
       {/* Buyurtmalar Grid Maydoni */}
       <main className="flex-1 p-6 overflow-y-auto">
-        {orders.length === 0 ? (
+        {(loadError || actionError) && (
+          <div className="mb-4 bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm font-semibold px-4 py-3 rounded-xl flex justify-between gap-3">
+            <span>{actionError || `Serverdan yuklab bo'lmadi: ${loadError}`}</span>
+            <button onClick={() => { setActionError(null); fetchKitchenOrders(); }} className="underline shrink-0">
+              Qayta yuklash
+            </button>
+          </div>
+        )}
+        {loading && orders.length === 0 ? (
+          <div className="h-96 flex items-center justify-center text-slate-500 text-sm">Yuklanmoqda…</div>
+        ) : orders.length === 0 ? (
           <div className="h-96 flex flex-col items-center justify-center text-slate-500">
             <CheckCheck className="w-16 h-16 text-emerald-500/40 mb-3" />
             <h3 className="text-xl font-semibold text-slate-300">Barcha buyurtmalar tayyor!</h3>

@@ -1,10 +1,10 @@
+import { isSupervisor } from '../auth/roles';
 import {
   Injectable,
   NotFoundException,
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
-import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -22,6 +22,19 @@ import {
 } from '@oshxona/db';
 import { generateUUIDv7, SyncOperation, calculateOrderTotals } from '@oshxona/shared';
 import { TelegramService } from '../telegram/telegram.service';
+import { AuditService, Actor } from '../audit/audit.service';
+import { SupervisorApprovalService } from '../auth/supervisor-approval.service';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
+
+/** KDS taom holati: ruxsat etilgan o'tishlar */
+const ITEM_TRANSITIONS: Record<string, string[]> = {
+  PENDING: ['COOKING', 'READY', 'CANCELLED'],
+  COOKING: ['READY', 'PENDING'],
+  READY: ['SERVED', 'COOKING'],
+  SERVED: ['READY'],
+  CANCELLED: [],
+};
+const ACTIVE_ORDER_STATUSES = [OrderStatus.OPEN, OrderStatus.SENT];
 
 @Injectable()
 export class OrdersService {
@@ -29,27 +42,51 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly eventsGateway: EventsGateway,
     private readonly telegramService: TelegramService,
+    private readonly audit: AuditService,
+    private readonly approval: SupervisorApprovalService,
   ) {}
 
   /**
    * Yangi buyurtma yaratish (Zal, Olib ketish yoki Yetkazib berish)
    */
   async createOrder(dto: CreateOrderDto, cashierId: string, deviceId?: string) {
-    const orderId = generateUUIDv7();
-    const orderNumber = await this.generateOrderNumber(deviceId);
+    // Idempotentlik: mijoz (POS) barqaror UUID yuboradi. Takroriy so'rov (tarmoq uzilishi,
+    // ikki marta bosish, offline sinxron) yangi buyurtma yaratmaydi — mavjudini qaytaradi.
+    if (dto.id) {
+      const existing = await this.prisma.order.findUnique({ where: { id: dto.id } });
+      if (existing) {
+        if (existing.cashierId !== cashierId) {
+          throw new ConflictException('Ushbu buyurtma IDsi boshqa foydalanuvchiga tegishli');
+        }
+        return this.findOne(existing.id);
+      }
+    }
+    const orderId = dto.id || generateUUIDv7();
 
-    // Agar stol tanlangan bo'lsa, stol mavjudligini tekshirish
+    if (dto.type === OrderType.DINE_IN && !dto.tableId) {
+      throw new BadRequestException('Zal buyurtmasi uchun stol tanlanishi shart');
+    }
     if (dto.tableId) {
-      const table = await this.prisma.table.findUnique({
-        where: { id: dto.tableId },
-      });
+      const table = await this.prisma.table.findFirst({ where: { id: dto.tableId, deletedAt: null } });
       if (!table) {
         throw new NotFoundException('Tanlangan stol topilmadi');
+      }
+      // Bitta stolda bir vaqtda bitta faol buyurtma — yangi taomlar mavjud buyurtmaga qo'shiladi
+      const active = await this.prisma.order.findFirst({
+        where: { tableId: dto.tableId, deletedAt: null, status: { in: ACTIVE_ORDER_STATUSES } },
+        select: { id: true, orderNumber: true },
+      });
+      if (active) {
+        throw new ConflictException({
+          message: `${table.name} stolida ochiq buyurtma bor (#${active.orderNumber}). Taomlarni o'sha buyurtmaga qo'shing.`,
+          activeOrderId: active.id,
+        });
       }
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. Buyurtma asosiy yozuvini yaratish
+      const orderNumber = await this.generateOrderNumber(tx, deviceId);
+
       const order = await tx.order.create({
         data: {
           id: orderId,
@@ -65,7 +102,6 @@ export class OrdersService {
         },
       });
 
-      // 2. Stol holatini BAND (OCCUPIED) ga o'tkazish
       if (dto.tableId) {
         await tx.table.update({
           where: { id: dto.tableId },
@@ -73,35 +109,67 @@ export class OrdersService {
         });
       }
 
-      // 3. Agar taomlar berilgan bo'lsa, qo'shish
       if (dto.items && dto.items.length > 0) {
         for (const itemDto of dto.items) {
-          await this.insertOrderItem(tx, orderId, itemDto, deviceId);
+          await this.insertOrderItem(tx, order.id, itemDto, deviceId);
         }
       }
 
-      // 4. Jami summalarni hisoblash
-      const updatedOrder = await this.recalculateOrderTotals(tx, orderId);
+      const updatedOrder = await this.recalculateOrderTotals(tx, order.id);
 
-      // 5. Outbox Sync
       await tx.syncQueue.create({
         data: {
           id: generateUUIDv7(),
           entity: 'order',
-          entityId: orderId,
+          entityId: order.id,
           operation: SyncOperation.CREATE,
           payload: updatedOrder as any,
           deviceId,
         },
       });
 
-      // 6. WebSocket xabarlari
       this.eventsGateway.emitOrderCreated(updatedOrder);
       if (dto.tableId) {
         this.eventsGateway.emitTableStatus({ id: dto.tableId, status: TableStatus.OCCUPIED });
       }
 
       return updatedOrder;
+    });
+  }
+
+  /**
+   * Chegirma qo'llash (foizda). Kassir o'z `discountLimit` idan oshirsa — admin PIN tasdig'i kerak.
+   */
+  async applyDiscount(
+    orderId: string,
+    dto: { percent: number; note?: string; approverPin?: string },
+    actor: Actor & { discountLimit?: number },
+  ) {
+    const order = await this.findOne(orderId);
+    if (!ACTIVE_ORDER_STATUSES.includes(order.status as any)) {
+      throw new BadRequestException('Faqat ochiq buyurtmaga chegirma berish mumkin');
+    }
+
+    let approvedBy: string | undefined;
+    const limit = isSupervisor(actor.role) ? 100 : actor.discountLimit ?? 0;
+    if (dto.percent > limit) {
+      approvedBy = await this.approval.approve(actor, dto.approverPin, `${dto.percent}% chegirma`);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: orderId },
+        data: { discountPercent: dto.percent, discountNote: dto.note, deviceId: actor.deviceId },
+      });
+      const updated = await this.recalculateOrderTotals(tx, orderId);
+      await this.audit.log(
+        actor,
+        'ORDER_DISCOUNT',
+        { orderId, orderNumber: order.orderNumber, percent: dto.percent, amount: updated.discount, approvedBy, note: dto.note },
+        tx,
+      );
+      this.eventsGateway.emitOrderUpdated(updated);
+      return updated;
     });
   }
 
@@ -114,8 +182,15 @@ export class OrdersService {
     tableId?: string;
     cashierId?: string;
     isOpenOnly?: boolean;
+    search?: string;
+    from?: Date;
+    to?: Date;
+    take?: number;
+    skip?: number;
   }) {
-    const { status, type, tableId, cashierId, isOpenOnly } = params;
+    const { status, type, tableId, cashierId, isOpenOnly, search, from, to } = params;
+    const take = Math.min(Math.max(params.take ?? 50, 1), 200);
+    const skip = Math.max(params.skip ?? 0, 0);
 
     const where: any = {
       deletedAt: null,
@@ -123,25 +198,36 @@ export class OrdersService {
       ...(type ? { type } : {}),
       ...(tableId ? { tableId } : {}),
       ...(cashierId ? { cashierId } : {}),
-      ...(isOpenOnly ? { status: { in: [OrderStatus.OPEN, OrderStatus.SENT] } } : {}),
+      ...(isOpenOnly ? { status: { in: ACTIVE_ORDER_STATUSES } } : {}),
+      ...(from || to ? { createdAt: { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } } : {}),
+      ...(search?.trim() ? { orderNumber: { contains: search.trim(), mode: 'insensitive' } } : {}),
     };
 
-    return this.prisma.order.findMany({
-      where,
-      include: {
-        table: { select: { id: true, name: true, hall: { select: { name: true } } } },
-        cashier: { select: { id: true, name: true, username: true } },
-        waiter: { select: { id: true, name: true } },
-        items: {
-          where: { deletedAt: null },
-          include: {
-            menuItem: { select: { id: true, name: true, kitchenStationId: true } },
+    const [items, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        include: {
+          table: { select: { id: true, name: true, hall: { select: { name: true } } } },
+          cashier: { select: { id: true, name: true } },
+          waiter: { select: { id: true, name: true } },
+          items: {
+            where: { deletedAt: null },
+            select: {
+              id: true, name: true, quantity: true, unitPrice: true, totalPrice: true,
+              notes: true, modifiers: true, status: true, menuItemId: true,
+            },
           },
+          payments: { where: { deletedAt: null }, select: { id: true, method: true, amount: true, change: true, createdAt: true } },
+          receipts: { where: { deletedAt: null, type: 'SALE' }, select: { id: true, receiptNo: true } },
         },
-        _count: { select: { payments: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+        take,
+        skip,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+
+    return { items, total, take, skip };
   }
 
   /**
@@ -185,7 +271,7 @@ export class OrdersService {
    */
   async addItem(orderId: string, dto: AddOrderItemDto, deviceId?: string) {
     const order = await this.findOne(orderId);
-    if (order.status === OrderStatus.PAID || order.status === OrderStatus.CANCELLED) {
+    if (!ACTIVE_ORDER_STATUSES.includes(order.status as any)) {
       throw new BadRequestException('Yopilgan yoki bekor qilingan buyurtmaga taom qo\'shib bo\'lmaydi');
     }
 
@@ -212,13 +298,23 @@ export class OrdersService {
   /**
    * Buyurtmadan taomni olib tashlash
    */
-  async removeItem(orderId: string, itemId: string, deviceId?: string) {
+  async removeItem(orderId: string, itemId: string, actor: Actor, approverPin?: string) {
+    const deviceId = actor.deviceId;
     const item = await this.prisma.orderItem.findFirst({
       where: { id: itemId, orderId, deletedAt: null },
+      include: { order: { select: { status: true, orderNumber: true } } },
     });
 
     if (!item) {
       throw new NotFoundException('Buyurtma ichida ushbu taom topilmadi');
+    }
+    if (!ACTIVE_ORDER_STATUSES.includes(item.order.status as any)) {
+      throw new BadRequestException('Yopilgan buyurtmadan taomni olib tashlab bo\'lmaydi');
+    }
+    // Oshxonaga yuborilgan taomni olib tashlash — admin tasdig'i bilan (isrof nazorati)
+    let approvedBy: string | undefined;
+    if (item.status !== OrderItemStatus.PENDING) {
+      approvedBy = await this.approval.approve(actor, approverPin, 'Oshxonaga yuborilgan taomni olib tashlash');
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -240,6 +336,12 @@ export class OrdersService {
         },
       });
 
+      await this.audit.log(
+        actor,
+        'ORDER_ITEM_REMOVE',
+        { orderId, orderNumber: item.order.orderNumber, itemId, name: item.name, itemStatus: item.status, approvedBy },
+        tx,
+      );
       this.eventsGateway.emitOrderUpdated(updatedOrder);
       return updatedOrder;
     });
@@ -332,12 +434,22 @@ export class OrdersService {
    * Oshxona KDS ekrani uchun taom holatini yangilash (COOKING -> READY -> SERVED)
    */
   async updateItemStatus(itemId: string, status: OrderItemStatus, deviceId?: string) {
-    const item = await this.prisma.orderItem.findUnique({
-      where: { id: itemId },
+    const item = await this.prisma.orderItem.findFirst({
+      where: { id: itemId, deletedAt: null },
+      include: { order: { select: { status: true } } },
     });
 
     if (!item) {
       throw new NotFoundException('Taom topilmadi');
+    }
+    if (item.order.status === OrderStatus.CANCELLED || item.order.status === OrderStatus.REFUNDED) {
+      throw new BadRequestException('Bekor qilingan buyurtma taomi holatini o\'zgartirib bo\'lmaydi');
+    }
+    if (item.status === status) {
+      return item; // takroriy bosish — o'zgarish yo'q
+    }
+    if (!(ITEM_TRANSITIONS[item.status] || []).includes(status)) {
+      throw new BadRequestException(`Taom holatini ${item.status} → ${status} ga o'tkazib bo'lmaydi`);
     }
 
     const updated = await this.prisma.orderItem.update({
@@ -359,22 +471,39 @@ export class OrdersService {
    * KDS ekrani uchun barcha faol oshxona buyurtmalari
    */
   async getActiveKitchenTickets() {
+    // Oshxona faqat YUBORILGAN (COOKING/READY) taomlarni ko'radi — kassadagi qoralama (PENDING) emas.
+    // To'langan (PAID) buyurtmalar ham taomi tayyor bo'lguncha ekranda qoladi (olib ketish: avval to'lov).
+    const kitchenItem = { deletedAt: null, status: { in: [OrderItemStatus.COOKING, OrderItemStatus.READY] } };
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     return this.prisma.order.findMany({
       where: {
-        status: { in: [OrderStatus.OPEN, OrderStatus.SENT] },
+        status: { in: [OrderStatus.OPEN, OrderStatus.SENT, OrderStatus.PAID] },
         deletedAt: null,
-        items: {
-          some: {
-            status: { in: [OrderItemStatus.COOKING, OrderItemStatus.READY, OrderItemStatus.PENDING] },
-            deletedAt: null,
-          },
-        },
+        createdAt: { gte: since },
+        items: { some: kitchenItem },
       },
-      include: {
-        table: true,
+      select: {
+        id: true,
+        orderNumber: true,
+        type: true,
+        status: true,
+        notes: true,
+        createdAt: true,
+        updatedAt: true,
+        table: { select: { id: true, name: true, hall: { select: { name: true } } } },
         items: {
-          where: { deletedAt: null },
-          include: { menuItem: true },
+          where: kitchenItem,
+          select: {
+            id: true,
+            name: true,
+            quantity: true,
+            notes: true,
+            modifiers: true,
+            status: true,
+            updatedAt: true,
+            menuItem: { select: { kitchenStationId: true } },
+          },
+          orderBy: { createdAt: 'asc' },
         },
       },
       orderBy: { createdAt: 'asc' },
@@ -445,9 +574,12 @@ export class OrdersService {
   async splitOrder(orderId: string, dto: SplitOrderDto, cashierId: string, deviceId?: string) {
     const sourceOrder = await this.findOne(orderId);
     const newOrderId = generateUUIDv7();
-    const newOrderNumber = await this.generateOrderNumber(deviceId);
+    if (!ACTIVE_ORDER_STATUSES.includes(sourceOrder.status as any)) {
+      throw new BadRequestException('Faqat ochiq buyurtmani bo\'lish mumkin');
+    }
 
     return this.prisma.$transaction(async (tx) => {
+      const newOrderNumber = await this.generateOrderNumber(tx, deviceId);
       // 1. Yangi buyurtma yaratish
       const newOrder = await tx.order.create({
         data: {
@@ -571,25 +703,32 @@ export class OrdersService {
   /**
    * Buyurtmani bekor qilish (Faqat Admin PIN tasdig'i bilan)
    */
-  async cancelOrder(orderId: string, dto: CancelOrderDto, userId: string, deviceId?: string) {
-    // 1. Admin PIN tekshirish
-    const admin = await this.prisma.user.findFirst({
-      where: { role: Role.ADMIN, isActive: true },
-    });
-
-    if (!admin) {
-      throw new UnauthorizedException('Tizimda faol admin topilmadi');
-    }
-
-    const isPinValid = await bcrypt.compare(dto.adminPin, admin.pinHash);
-    if (!isPinValid) {
-      throw new UnauthorizedException('Admin PIN kodi noto\'g\'ri! Buyurtmani bekor qilib bo\'lmaydi');
-    }
-
+  async cancelOrder(orderId: string, dto: CancelOrderDto, actor: Actor) {
+    const userId = actor.id;
+    const deviceId = actor.deviceId;
     const order = await this.findOne(orderId);
+    // To'langan buyurtma bekor qilinmaydi — faqat "qaytarish" (refund) orqali
+    if (!ACTIVE_ORDER_STATUSES.includes(order.status as any)) {
+      throw new BadRequestException(
+        order.status === OrderStatus.PAID
+          ? 'To\'langan buyurtmani bekor qilib bo\'lmaydi — "Qaytarish" (refund) dan foydalaning'
+          : 'Bu buyurtma allaqachon yopilgan',
+      );
+    }
+    const approvedBy = await this.approval.approve(actor, dto.adminPin, 'Buyurtmani bekor qilish');
 
     return this.prisma.$transaction(async (tx) => {
       // 2. Buyurtmani bekor qilish
+      // Atomik o'tish: parallel so'rovlar ikki marta bekor qila olmaydi
+      const moved = await tx.order.updateMany({
+        where: { id: orderId, status: { in: ACTIVE_ORDER_STATUSES } },
+        data: { status: OrderStatus.CANCELLED },
+      });
+      if (moved.count === 0) throw new ConflictException('Buyurtma holati o\'zgargan — qayta yuklang');
+      await tx.orderItem.updateMany({
+        where: { orderId, deletedAt: null, status: { not: OrderItemStatus.SERVED } },
+        data: { status: OrderItemStatus.CANCELLED },
+      });
       const cancelledOrder = await tx.order.update({
         where: { id: orderId },
         data: {
@@ -620,6 +759,7 @@ export class OrdersService {
             orderNumber: order.orderNumber,
             reason: dto.reason,
             total: order.total,
+            approvedBy,
           },
           deviceId,
         },
@@ -752,13 +892,15 @@ export class OrdersService {
       const feeSetting = await tx.setting.findUnique({
         where: { key: 'SERVICE_FEE_PERCENT' },
       });
-      serviceFeePercent = feeSetting ? parseInt(feeSetting.value, 10) || 10 : 10;
+      // "0" — xizmat haqi yo'q degani (avval 0 noto'g'ri ravishda 10% ga aylanardi)
+      const parsed = feeSetting ? Number(feeSetting.value) : 10;
+      serviceFeePercent = Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : 10;
     }
 
     const { discount, serviceFee, total } = calculateOrderTotals({
       subtotal,
       serviceFeePercent,
-      discountFixed: order.discount || 0,
+      discountPercent: order.discountPercent || 0,
     });
 
     return tx.order.update({
@@ -766,6 +908,7 @@ export class OrdersService {
       data: {
         subtotal,
         serviceFee,
+        discount,
         total,
         version: { increment: 1 },
       },
@@ -779,22 +922,22 @@ export class OrdersService {
   /**
    * Chek / buyurtma raqamini generatsiya qilish (masalan: K1-0425-0037)
    */
-  private async generateOrderNumber(deviceId?: string): Promise<string> {
+  private async generateOrderNumber(tx: any, deviceId?: string): Promise<string> {
+    // Tranzaksiya darajasidagi qulf — parallel kassalar bir xil raqam olmaydi (orderNumber UNIQUE)
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('order_number_seq'))`;
+
     const prefix = deviceId ? (deviceId.includes('02') ? 'K2' : 'K1') : 'K1';
     const now = new Date();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
-    const datePrefix = `${month}${day}`;
+    const base = `${prefix}-${month}${day}-`;
 
-    const todayCount = await this.prisma.order.count({
-      where: {
-        createdAt: {
-          gte: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
-        },
-      },
+    const last = await tx.order.findFirst({
+      where: { orderNumber: { startsWith: base } },
+      orderBy: { orderNumber: 'desc' },
+      select: { orderNumber: true },
     });
-
-    const sequence = String(todayCount + 1).padStart(4, '0');
-    return `${prefix}-${datePrefix}-${sequence}`;
+    const next = last ? parseInt(last.orderNumber.slice(base.length), 10) + 1 : 1;
+    return `${base}${String(next).padStart(4, '0')}`;
   }
 }

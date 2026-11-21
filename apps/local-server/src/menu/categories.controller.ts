@@ -1,3 +1,4 @@
+import { isSupervisor } from '../auth/roles';
 import {
   Controller,
   Get,
@@ -40,7 +41,7 @@ export class CategoriesController {
   @ApiQuery({ name: 'includeInactive', required: false, type: Boolean })
   findAll(@Query('includeInactive') includeInactive?: string, @CurrentUser('role') role?: string) {
     // Nofaol kategoriyalarni faqat admin ko'radi
-    return this.categoriesService.findAll(includeInactive === 'true' && role === Role.ADMIN);
+    return this.categoriesService.findAll(includeInactive === 'true' && isSupervisor(role));
   }
 
   @Get(':id')

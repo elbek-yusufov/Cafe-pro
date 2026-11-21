@@ -27,3 +27,7 @@ backups/
 
 # Yuklangan rasmlar (lokal server)
 apps/local-server/uploads/
+
+# Electron build output
+apps/pos-desktop/electron-dist/
+apps/pos-desktop/release/

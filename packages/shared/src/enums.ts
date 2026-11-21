@@ -1,7 +1,10 @@
 export enum Role {
+  OWNER = 'OWNER',
   ADMIN = 'ADMIN',
+  MANAGER = 'MANAGER',
   CASHIER = 'CASHIER',
-  WAITER = 'WAITER'
+  WAITER = 'WAITER',
+  KITCHEN = 'KITCHEN'
 }
 
 export enum DeviceType {

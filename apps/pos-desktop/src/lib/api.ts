@@ -45,6 +45,10 @@ export function getApiBaseUrl(): string {
   const override = safeGet(API_URL_STORAGE_KEY);
   if (override) return trimSlash(override);
 
+  // Windows ilovasi: %APPDATA%/OshxonaPOS Kassa/pos-config.json dagi manzil
+  const desktop = typeof window !== 'undefined' ? window.posApi?.config.apiUrl : undefined;
+  if (desktop) return trimSlash(desktop);
+
   const fromEnv = import.meta.env.VITE_API_URL;
   if (fromEnv) return trimSlash(fromEnv);
 
@@ -59,10 +63,11 @@ export function getApiBaseUrl(): string {
 export function setApiBaseUrlOverride(url: string | null): void {
   if (url && url.trim()) safeSet(API_URL_STORAGE_KEY, trimSlash(url.trim()));
   else safeRemove(API_URL_STORAGE_KEY);
+  if (url && typeof window !== 'undefined' && window.posApi) window.posApi.setApiUrl(trimSlash(url.trim()));
 }
 
 export function getDeviceId(): string | undefined {
-  return import.meta.env.VITE_DEVICE_ID || undefined;
+  return (typeof window !== 'undefined' && window.posApi?.config.deviceId) || import.meta.env.VITE_DEVICE_ID || undefined;
 }
 
 // --------------------------------------------------------
@@ -85,15 +90,33 @@ export interface AuthTokens {
   user: SessionUser;
 }
 
+/**
+ * Refresh token (7 kun) — Windows ilovasida OS shifrlangan omborda (DPAPI), brauzerda localStorage.
+ * Access token qisqa muddatli (15 daqiqa).
+ */
+function setRefreshToken(value: string | null) {
+  const desktop = typeof window !== 'undefined' ? window.posApi : undefined;
+  if (desktop) {
+    desktop.secureSet(value);
+    safeRemove(REFRESH_TOKEN_KEY);
+  } else if (value) safeSet(REFRESH_TOKEN_KEY, value);
+  else safeRemove(REFRESH_TOKEN_KEY);
+}
+
+function getRefreshToken(): string | null {
+  const desktop = typeof window !== 'undefined' ? window.posApi : undefined;
+  return desktop ? desktop.secureGet() : safeGet(REFRESH_TOKEN_KEY);
+}
+
 export function saveSession(tokens: AuthTokens): void {
   safeSet(TOKEN_KEY, tokens.accessToken);
-  safeSet(REFRESH_TOKEN_KEY, tokens.refreshToken);
+  setRefreshToken(tokens.refreshToken);
   safeSet(USER_KEY, JSON.stringify(tokens.user));
 }
 
 export function clearSession(): void {
   safeRemove(TOKEN_KEY);
-  safeRemove(REFRESH_TOKEN_KEY);
+  setRefreshToken(null);
   safeRemove(USER_KEY);
 }
 
@@ -141,7 +164,7 @@ let refreshInFlight: Promise<boolean> | null = null;
 export function refreshSession(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
-    const refreshToken = safeGet(REFRESH_TOKEN_KEY);
+    const refreshToken = getRefreshToken();
     if (!refreshToken) return expire();
     try {
       const res = await fetch(`${getApiBaseUrl()}/auth/refresh`, {

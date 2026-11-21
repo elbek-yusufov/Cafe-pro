@@ -6,6 +6,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import * as dotenv from 'dotenv';
 import { AppModule } from './app.module';
+import { AuthService } from './auth/auth.service';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { assertSecurityConfig, corsOriginCallback } from './config/security.config';
@@ -83,6 +84,17 @@ async function bootstrap() {
     SwaggerModule.setup('api/docs', app, document, {
       customSiteTitle: 'OshxonaPOS API Hujjatlari',
     });
+  }
+
+  // Production'da demo (seed) PIN/parol bilan faol hisob bo'lsa — ishga tushmaymiz
+  if (process.env.NODE_ENV === 'production') {
+    const weak = await app.get(AuthService).findDefaultCredentialUsers();
+    if (weak.length) {
+      throw new Error(
+        `[security] Standart (demo) PIN/parol bilan faol hisoblar bor: ${weak.join(', ')}. ` +
+          'Admin paneldan PIN/parolni almashtiring yoki hisobni o\'chiring.',
+      );
+    }
   }
 
   const port = Number(process.env.PORT) || 4000;
