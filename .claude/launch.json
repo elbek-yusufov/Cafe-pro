@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pos-desktop",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@oshxona/pos-desktop", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "admin-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@oshxona/admin-web", "dev"],
+      "port": 3000
+    }
+  ]
+}
